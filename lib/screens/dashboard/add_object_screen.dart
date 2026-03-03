@@ -135,104 +135,107 @@ class _AddObjectScreenState extends State<AddObjectScreen> {
           const SizedBox(height: 24),
 
           GlassCard(
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Image picker
-                  GestureDetector(
-                    onTap: _showImagePicker,
-                    child: Container(
-                      height: 180,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF3B82F6).withOpacity(0.06),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: const Color(0xFF3B82F6).withOpacity(0.2),
-                          style: BorderStyle.solid,
+            child: Material(                      // ← FIX: wrap with Material
+              color: Colors.transparent,          // ← keeps GlassCard styling
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Image picker
+                    GestureDetector(
+                      onTap: _showImagePicker,
+                      child: Container(
+                        height: 180,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF3B82F6).withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: const Color(0xFF3B82F6).withOpacity(0.2),
+                            style: BorderStyle.solid,
+                          ),
                         ),
+                        child: _imageFile != null
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(16),
+                                child: Image.file(_imageFile!,
+                                    fit: BoxFit.cover),
+                              )
+                            : const Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.cloud_upload_outlined,
+                                      size: 40, color: Color(0xFF3B82F6)),
+                                  SizedBox(height: 8),
+                                  Text('Tap to upload image',
+                                      style: TextStyle(
+                                          color: Color(0xFF3B82F6),
+                                          fontWeight: FontWeight.w500)),
+                                  Text('Supports JPG, PNG',
+                                      style: TextStyle(
+                                          color: Color(0xFF94A3B8),
+                                          fontSize: 12)),
+                                ],
+                              ),
                       ),
-                      child: _imageFile != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(16),
-                              child: Image.file(_imageFile!,
-                                  fit: BoxFit.cover),
-                            )
-                          : const Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.cloud_upload_outlined,
-                                    size: 40, color: Color(0xFF3B82F6)),
-                                SizedBox(height: 8),
-                                Text('Tap to upload image',
-                                    style: TextStyle(
-                                        color: Color(0xFF3B82F6),
-                                        fontWeight: FontWeight.w500)),
-                                Text('Supports JPG, PNG',
-                                    style: TextStyle(
-                                        color: Color(0xFF94A3B8),
-                                        fontSize: 12)),
-                              ],
-                            ),
                     ),
-                  ),
-                  const SizedBox(height: 20),
+                    const SizedBox(height: 20),
 
-                  TextFormField(
-                    controller: _nameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Object Name *',
-                      prefixIcon: Icon(Icons.label_outline),
-                      hintText: 'e.g. Keys, Wallet, Laptop',
-                    ),
-                    validator: (v) => v == null || v.trim().isEmpty
-                        ? 'Object name is required'
-                        : null,
-                  ),
-                  const SizedBox(height: 16),
-
-                  TextFormField(
-                    controller: _locationController,
-                    decoration: const InputDecoration(
-                      labelText: 'Usual Location *',
-                      prefixIcon: Icon(Icons.location_on_outlined),
-                      hintText: 'e.g. Bedroom, Kitchen counter',
-                    ),
-                    validator: (v) => v == null || v.trim().isEmpty
-                        ? 'Usual location is required'
-                        : null,
-                  ),
-                  const SizedBox(height: 16),
-
-                  TextFormField(
-                    controller: _idController,
-                    decoration: const InputDecoration(
-                      labelText: 'Object ID (optional)',
-                      prefixIcon: Icon(Icons.qr_code_outlined),
-                      hintText: 'Auto-generated if blank',
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  if (_error.isNotEmpty)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 16),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
+                    TextFormField(
+                      controller: _nameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Object Name *',
+                        prefixIcon: Icon(Icons.label_outline),
+                        hintText: 'e.g. Keys, Wallet, Laptop',
                       ),
-                      child: Text(_error,
-                          style: const TextStyle(color: Colors.red)),
+                      validator: (v) => v == null || v.trim().isEmpty
+                          ? 'Object name is required'
+                          : null,
                     ),
+                    const SizedBox(height: 16),
 
-                  GradientButton(
-                    label: 'Register Object',
-                    onPressed: _handleSubmit,
-                    loading: _loading,
-                  ),
-                ],
+                    TextFormField(
+                      controller: _locationController,
+                      decoration: const InputDecoration(
+                        labelText: 'Usual Location *',
+                        prefixIcon: Icon(Icons.location_on_outlined),
+                        hintText: 'e.g. Bedroom, Kitchen counter',
+                      ),
+                      validator: (v) => v == null || v.trim().isEmpty
+                          ? 'Usual location is required'
+                          : null,
+                    ),
+                    const SizedBox(height: 16),
+
+                    TextFormField(
+                      controller: _idController,
+                      decoration: const InputDecoration(
+                        labelText: 'Object ID (optional)',
+                        prefixIcon: Icon(Icons.qr_code_outlined),
+                        hintText: 'Auto-generated if blank',
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    if (_error.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(_error,
+                            style: const TextStyle(color: Colors.red)),
+                      ),
+
+                    GradientButton(
+                      label: 'Register Object',
+                      onPressed: _handleSubmit,
+                      loading: _loading,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

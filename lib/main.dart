@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
-
+import 'package:media_kit/media_kit.dart';
 import 'services/supabase_service.dart';
 import 'providers/auth_provider.dart';
 import 'providers/theme_provider.dart';
@@ -21,6 +21,7 @@ import 'screens/dashboard/settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   await SupabaseService.initialize();
   runApp(const PulseApp());
 }

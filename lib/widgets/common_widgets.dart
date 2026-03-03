@@ -46,9 +46,12 @@ class GlassCard extends StatelessWidget {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(borderRadius),
-        child: Padding(
-          padding: padding ?? const EdgeInsets.all(20),
-          child: child,
+        child: Material(                        // ← FIX: provides Material ancestor
+          color: Colors.transparent,            // ← keeps GlassCard styling intact
+          child: Padding(
+            padding: padding ?? const EdgeInsets.all(20),
+            child: child,
+          ),
         ),
       ),
     );

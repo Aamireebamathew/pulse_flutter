@@ -65,16 +65,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (!mounted) return;
     setState(() => _loading = false);
 
-    if (err != null) {
-      setState(() => _error = err);
-    } else {
-      PulseSnackBar.show(
-        context,
-        'Account created! Please check your email to verify.',
-        isSuccess: true,
-      );
-      context.go('/dashboard');
-    }
+   if (err == 'CHECK_EMAIL') {
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Check your email'),
+      content: Text(
+        'A confirmation link was sent to ${_emailController.text.trim()}. '
+        'Click it to verify, then sign in.',
+      ),
+      actions: [
+        ElevatedButton(
+          onPressed: () { Navigator.pop(ctx); context.go('/login'); },
+          child: const Text('Go to Sign In'),
+        ),
+      ],
+    ),
+  );
+} else if (err != null) {
+  setState(() => _error = err);
+} else {
+  context.go('/dashboard');
+}
   }
 
   @override

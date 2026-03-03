@@ -39,8 +39,6 @@ class MainDashboard extends StatefulWidget {
 }
 
 class _MainDashboardState extends State<MainDashboard> {
-  bool _drawerOpen = false;
-
   String _getCurrentPath(BuildContext context) {
     return GoRouterState.of(context).matchedLocation;
   }
@@ -66,21 +64,24 @@ class _MainDashboardState extends State<MainDashboard> {
 
   Widget _buildWideLayout(
       BuildContext context, String currentPath, int currentIndex) {
-    return PulseBackground(
-      child: Row(
-        children: [
-          _buildSidebar(context, currentPath),
-          Expanded(
-            child: Column(
-              children: [
-                _buildTopBar(context),
-                Expanded(
-                  child: widget.child,
-                ),
-              ],
+    return Scaffold(                          // ← FIX: provides Material ancestor for all screens
+      backgroundColor: Colors.transparent,
+      body: PulseBackground(
+        child: Row(
+          children: [
+            _buildSidebar(context, currentPath),
+            Expanded(
+              child: Column(
+                children: [
+                  _buildTopBar(context),
+                  Expanded(
+                    child: widget.child,
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

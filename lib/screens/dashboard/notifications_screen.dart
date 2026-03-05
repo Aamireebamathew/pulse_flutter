@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../services/notification_service.dart';
 import '../../utils/app_theme.dart';
 
 // ─── Bell icon widget ─────────────────────────────────────────────────────────
-/// Add to any AppBar:
-///   actions: [ const NotificationBell() ]
 class NotificationBell extends StatelessWidget {
   const NotificationBell({super.key});
 
@@ -68,6 +68,12 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   Widget build(BuildContext context) {
+    final user     = context.read<AuthProvider>().user;
+    final email    = user?.email ?? '';
+    // Show first part of email as display name e.g. "john" from "john@gmail.com"
+    final username = email.contains('@') ? email.split('@').first : email;
+    final isDark   = context.isDark;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Notifications'),
@@ -78,45 +84,122 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 NotificationService.instance.cancelAll();
                 setState(() {});
               },
-              child: Text('Clear all',
+              child: const Text('Clear all',
                   style: TextStyle(color: AppColors.error)),
             ),
         ],
       ),
-      body: notificationLog.isEmpty
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 72, height: 72,
-                    decoration: BoxDecoration(
-                      color: context.primary.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(AppRadius.xl),
-                    ),
-                    child: Icon(Icons.notifications_off_outlined,
-                        size: 32,
-                        color: context.primary.withOpacity(0.5)),
-                  ),
-                  const SizedBox(height: AppSpacing.lg),
-                  Text('No notifications yet',
-                      style: AppTextStyles.h3
-                          .copyWith(color: context.textPrimary)),
-                  const SizedBox(height: AppSpacing.sm),
-                  Text('Alerts will appear here',
-                      style: AppTextStyles.body
-                          .copyWith(color: context.textMuted)),
-                ],
+      body: Column(
+        children: [
+          // ── Welcome back banner ──────────────────────────────────────
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(
+                AppSpacing.lg, AppSpacing.lg, AppSpacing.lg, 0),
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: isDark
+                    ? [const Color(0xFF1E3A5F), const Color(0xFF1A2F4A)]
+                    : [const Color(0xFFEFF6FF), const Color(0xFFDBEAFE)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.all(AppSpacing.lg),
-              itemCount: notificationLog.length,
-              separatorBuilder: (_, __) =>
-                  const SizedBox(height: AppSpacing.sm),
-              itemBuilder: (_, i) =>
-                  _NotifCard(item: notificationLog[i]),
+              borderRadius: BorderRadius.circular(AppRadius.lg),
+              border: Border.all(
+                color: context.primary.withOpacity(isDark ? 0.25 : 0.20),
+              ),
             ),
+            child: Row(children: [
+              // Avatar circle
+              Container(
+                width: 46, height: 46,
+                decoration: BoxDecoration(
+                  color: context.primary.withOpacity(0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Text(
+                    username.isNotEmpty
+                        ? username[0].toUpperCase()
+                        : '👋',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: context.primary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Welcome back${username.isNotEmpty ? ', $username' : ''}! 👋',
+                      style: AppTextStyles.h4.copyWith(
+                        color: context.textPrimary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      notificationLog.isEmpty
+                          ? 'You\'re all caught up — no new alerts.'
+                          : '${notificationLog.length} notification${notificationLog.length == 1 ? '' : 's'} waiting for you.',
+                      style: AppTextStyles.bodySm
+                          .copyWith(color: context.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+            ]),
+          ),
+
+          const SizedBox(height: AppSpacing.lg),
+
+          // ── Notification list or empty state ─────────────────────────
+          Expanded(
+            child: notificationLog.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 72, height: 72,
+                          decoration: BoxDecoration(
+                            color: context.primary.withOpacity(0.08),
+                            borderRadius:
+                                BorderRadius.circular(AppRadius.xl),
+                          ),
+                          child: Icon(Icons.notifications_off_outlined,
+                              size: 32,
+                              color: context.primary.withOpacity(0.5)),
+                        ),
+                        const SizedBox(height: AppSpacing.lg),
+                        Text('No notifications yet',
+                            style: AppTextStyles.h3
+                                .copyWith(color: context.textPrimary)),
+                        const SizedBox(height: AppSpacing.sm),
+                        Text('Alerts will appear here',
+                            style: AppTextStyles.body
+                                .copyWith(color: context.textMuted)),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(
+                        AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.lg),
+                    itemCount: notificationLog.length,
+                    separatorBuilder: (_, __) =>
+                        const SizedBox(height: AppSpacing.sm),
+                    itemBuilder: (_, i) =>
+                        _NotifCard(item: notificationLog[i]),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }

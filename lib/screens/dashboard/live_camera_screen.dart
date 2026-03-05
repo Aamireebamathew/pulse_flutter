@@ -750,9 +750,9 @@ class _BoundingBox extends StatelessWidget {
     return Stack(clipBehavior: Clip.none, children: [
       Container(
         decoration: BoxDecoration(
-          border: Border.all(color: color, width: 2.5),
+          border: Border.all(color: color, width: 3.5),
           borderRadius: BorderRadius.circular(6),
-          color: color.withOpacity(0.07),
+          color: color.withOpacity(0.15),
         ),
       ),
       Positioned(top: -2, left: -2,
@@ -781,12 +781,12 @@ class _BoundingBox extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text('${label.toUpperCase()}  $pct%',
-                  style: const TextStyle(color: Colors.white, fontSize: 10,
+                  style: const TextStyle(color: Colors.white, fontSize: 12,
                       fontWeight: FontWeight.w800, letterSpacing: 0.3),
                   overflow: TextOverflow.ellipsis),
               if (sublabel.isNotEmpty)
                 Text(sublabel,
-                    style: const TextStyle(color: Colors.white70, fontSize: 9),
+                    style: const TextStyle(color: Colors.white70, fontSize: 10),
                     overflow: TextOverflow.ellipsis),
             ],
           ),
@@ -820,7 +820,7 @@ class _CornerPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final p = Paint()
       ..color = color
-      ..strokeWidth = 3
+      ..strokeWidth = 4
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
     final x = left ? 0.0 : size.width;

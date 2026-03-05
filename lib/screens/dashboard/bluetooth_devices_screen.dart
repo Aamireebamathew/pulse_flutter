@@ -1,102 +1,155 @@
 import 'dart:async';
-import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../../widgets/common_widgets.dart';
-
-enum DeviceStatus { connected, disconnected, pairing }
+import '../../utils/app_theme.dart';
 
 enum DeviceType { smartwatch, earbuds, tracker, other }
 
-class ConnectedDevice {
-  final String id;
-  final String name;
-  final DeviceType type;
-  DeviceStatus status;
-  final int battery;
-  bool alertsEnabled;
-  final String lastSeen;
+DeviceType _inferType(String name) {
+  final n = name.toLowerCase();
+  if (n.contains('watch')) return DeviceType.smartwatch;
+  if (n.contains('airpod') || n.contains('earbud') ||
+      n.contains('headphone') || n.contains('buds')) return DeviceType.earbuds;
+  if (n.contains('tile') || n.contains('tracker') ||
+      n.contains('tag') || n.contains('find')) return DeviceType.tracker;
+  return DeviceType.other;
+}
 
-  ConnectedDevice({
-    required this.id,
-    required this.name,
-    required this.type,
-    required this.status,
-    required this.battery,
+class _DeviceVM {
+  final BluetoothDevice device;
+  BluetoothConnectionState connectionState;
+  bool alertsEnabled;
+  int battery;
+
+  _DeviceVM({
+    required this.device,
+    required this.connectionState,
     this.alertsEnabled = true,
-    required this.lastSeen,
+    this.battery = 0,
   });
+
+  String get id   => device.remoteId.str;
+  String get name => device.platformName.isNotEmpty ? device.platformName : 'Unknown Device';
+  DeviceType get type => _inferType(name);
+  bool get isConnected => connectionState == BluetoothConnectionState.connected;
 }
 
 class BluetoothDevicesScreen extends StatefulWidget {
   const BluetoothDevicesScreen({super.key});
 
   @override
-  State<BluetoothDevicesScreen> createState() =>
-      _BluetoothDevicesScreenState();
+  State<BluetoothDevicesScreen> createState() => _BluetoothDevicesScreenState();
 }
 
 class _BluetoothDevicesScreenState extends State<BluetoothDevicesScreen> {
-  bool _scanning = false;
-  Timer? _scanTimer;
+  final Map<String, _DeviceVM> _vms = {};
+  final Map<String, StreamSubscription> _connSubs = {};
 
-  final List<ConnectedDevice> _devices = [
-    ConnectedDevice(
-      id: '1',
-      name: 'My Smartwatch',
-      type: DeviceType.smartwatch,
-      status: DeviceStatus.connected,
-      battery: 78,
-      lastSeen: 'Now',
-    ),
-    ConnectedDevice(
-      id: '2',
-      name: 'AirPods Pro',
-      type: DeviceType.earbuds,
-      status: DeviceStatus.disconnected,
-      battery: 45,
-      lastSeen: '2 hours ago',
-    ),
-    ConnectedDevice(
-      id: '3',
-      name: 'Tile Tracker',
-      type: DeviceType.tracker,
-      status: DeviceStatus.connected,
-      battery: 92,
-      lastSeen: 'Now',
-    ),
-  ];
+  bool _scanning = false;
+  bool _btUnavailable = false;
+  StreamSubscription? _scanSub;
+  StreamSubscription? _btStateSub;
+  StreamSubscription? _scanStateSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
 
   @override
   void dispose() {
-    _scanTimer?.cancel();
+    _scanSub?.cancel();
+    _btStateSub?.cancel();
+    _scanStateSub?.cancel();
+    for (final s in _connSubs.values) s.cancel();
+    FlutterBluePlus.stopScan();
     super.dispose();
   }
 
-  void _startScan() {
-    setState(() => _scanning = true);
-    _scanTimer = Timer(const Duration(seconds: 3), () {
+  Future<void> _init() async {
+    if (await FlutterBluePlus.isSupported == false) {
+      if (mounted) setState(() => _btUnavailable = true);
+      return;
+    }
+
+    _btStateSub = FlutterBluePlus.adapterState.listen((state) {
+      if (state == BluetoothAdapterState.off && mounted) {
+        setState(() { _vms.clear(); _scanning = false; });
+      }
+    });
+
+    _scanStateSub = FlutterBluePlus.isScanning.listen((scanning) {
+      if (mounted) setState(() => _scanning = scanning);
+    });
+
+    await _loadConnectedDevices();
+  }
+
+  Future<void> _loadConnectedDevices() async {
+    try {
+      final systemDevices = await FlutterBluePlus.systemDevices([]);
+      for (final d in systemDevices) {
+        final state = await d.connectionState.first;
+        _registerDevice(d, state);
+      }
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  void _registerDevice(BluetoothDevice device, BluetoothConnectionState state) {
+    final id = device.remoteId.str;
+    if (_vms.containsKey(id)) {
+      _vms[id]!.connectionState = state;
+      return;
+    }
+    _vms[id] = _DeviceVM(device: device, connectionState: state);
+    _connSubs[id]?.cancel();
+    _connSubs[id] = device.connectionState.listen((s) {
       if (!mounted) return;
-      setState(() {
-        _scanning = false;
-        // Simulate finding a new device
-        _devices.add(ConnectedDevice(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          name: 'Unknown Device ${Random().nextInt(99)}',
-          type: DeviceType.other,
-          status: DeviceStatus.disconnected,
-          battery: 0,
-          lastSeen: 'Just found',
-        ));
-      });
+      setState(() => _vms[id]?.connectionState = s);
     });
   }
 
-  void _disconnect(String id) {
-    setState(() {
-      final d = _devices.firstWhere((d) => d.id == id);
-      d.status = DeviceStatus.disconnected;
-    });
+  Future<void> _startScan() async {
+    try {
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+      _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.scanResults.listen((results) {
+        for (final r in results) {
+          if (!mounted) return;
+          setState(() => _registerDevice(
+              r.device,
+              r.device.isConnected
+                  ? BluetoothConnectionState.connected
+                  : BluetoothConnectionState.disconnected));
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        PulseSnackBar.show(context, 'Scan failed: $e', isError: true);
+      }
+    }
+  }
+
+  Future<void> _connect(String id) async {
+    final vm = _vms[id];
+    if (vm == null) return;
+    setState(() => vm.connectionState = BluetoothConnectionState.connecting);
+    try {
+      await vm.device.connect(timeout: const Duration(seconds: 10));
+    } catch (e) {
+      if (mounted) {
+        PulseSnackBar.show(context, 'Could not connect: $e', isError: true);
+        setState(() => vm.connectionState = BluetoothConnectionState.disconnected);
+      }
+    }
+  }
+
+  Future<void> _disconnect(String id) async {
+    try { await _vms[id]?.device.disconnect(); } catch (_) {}
   }
 
   void _remove(String id) {
@@ -104,19 +157,25 @@ class _BluetoothDevicesScreenState extends State<BluetoothDevicesScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20)),
-        title: const Text('Remove Device'),
-        content: const Text('Remove this device from your list?'),
+            borderRadius: BorderRadius.circular(AppRadius.xl)),
+        title: Text('Remove Device',
+            style: AppTextStyles.h2.copyWith(color: context.textPrimary)),
+        content: Text('Remove this device from your list?',
+            style: AppTextStyles.body.copyWith(color: context.textSecondary)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              setState(() => _devices.removeWhere((d) => d.id == id));
+              if (_vms[id]?.isConnected == true) await _vms[id]?.device.disconnect();
+              _connSubs[id]?.cancel();
+              _connSubs.remove(id);
+              if (mounted) setState(() => _vms.remove(id));
             },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error, foregroundColor: Colors.white),
             child: const Text('Remove'),
           ),
         ],
@@ -125,134 +184,261 @@ class _BluetoothDevicesScreenState extends State<BluetoothDevicesScreen> {
   }
 
   void _toggleAlerts(String id) {
-    setState(() {
-      final d = _devices.firstWhere((d) => d.id == id);
-      d.alertsEnabled = !d.alertsEnabled;
-    });
-  }
-
-  void _pairDevice(String id) {
-    setState(() {
-      final d = _devices.firstWhere((d) => d.id == id);
-      d.status = DeviceStatus.pairing;
-    });
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      setState(() {
-        final d = _devices.firstWhere((d) => d.id == id);
-        d.status = DeviceStatus.connected;
-      });
-    });
+    if (!mounted) return;
+    setState(() => _vms[id]?.alertsEnabled = !(_vms[id]?.alertsEnabled ?? true));
   }
 
   @override
   Widget build(BuildContext context) {
-    final connected = _devices.where((d) =>
-        d.status == DeviceStatus.connected ||
-        d.status == DeviceStatus.pairing).toList();
-    final disconnected =
-        _devices.where((d) => d.status == DeviceStatus.disconnected).toList();
+    if (_btUnavailable) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.xl3),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 72, height: 72,
+              decoration: BoxDecoration(
+                color: context.textMuted.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(AppRadius.xl),
+              ),
+              child: Icon(Icons.bluetooth_disabled,
+                  size: 32, color: context.textMuted),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            Text('Bluetooth not supported',
+                style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+            const SizedBox(height: AppSpacing.xs),
+            Text('This device does not support Bluetooth',
+                style: AppTextStyles.body.copyWith(color: context.textMuted),
+                textAlign: TextAlign.center),
+          ]),
+        ),
+      );
+    }
+
+    final connected    = _vms.values.where((v) => v.isConnected).toList();
+    final disconnected = _vms.values.where((v) => !v.isConnected).toList();
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(AppSpacing.xl),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Device Connections',
-                        style: TextStyle(
-                            fontSize: 28, fontWeight: FontWeight.bold)),
-                    Text('Manage your Bluetooth devices',
-                        style: TextStyle(
-                            color: Color(0xFF64748B), fontSize: 15)),
-                  ],
-                ),
-              ),
-              GradientButton(
-                label: _scanning ? 'Scanning...' : 'Scan',
-                icon: _scanning ? null : Icons.bluetooth_searching,
-                onPressed: _scanning ? null : _startScan,
-                loading: _scanning,
-                height: 44,
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
+          // ── Header ──────────────────────────────────────────────────
+          Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Device Connections',
+                    style: AppTextStyles.display.copyWith(color: context.textPrimary)),
+                Text('Manage your Bluetooth devices',
+                    style: AppTextStyles.body.copyWith(color: context.textMuted)),
+              ]),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            GradientButton(             // ✅ fullWidth: false — inside Row
+              label: _scanning ? 'Scanning...' : 'Scan',
+              icon: _scanning ? null : Icons.bluetooth_searching,
+              onPressed: _scanning ? null : _startScan,
+              loading: _scanning,
+              height: 44,
+              fullWidth: false,
+            ),
+          ]),
+          const SizedBox(height: AppSpacing.xl2),
 
-          // Summary row
-          Row(
-            children: [
-              _SummaryChip(
-                icon: Icons.bluetooth_connected,
-                label: '${connected.length} Connected',
-                color: const Color(0xFF22C55E),
-              ),
-              const SizedBox(width: 12),
-              _SummaryChip(
-                icon: Icons.bluetooth_disabled,
-                label: '${disconnected.length} Disconnected',
-                color: const Color(0xFF94A3B8),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
+          // ── Summary chips ────────────────────────────────────────────
+          Row(children: [
+            _SummaryChip(
+              icon: Icons.bluetooth_connected,
+              label: '${connected.length} Connected',
+              color: AppColors.success,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            _SummaryChip(
+              icon: Icons.bluetooth_disabled,
+              label: '${disconnected.length} Disconnected',
+              color: context.textMuted,
+            ),
+          ]),
+          const SizedBox(height: AppSpacing.xl),
 
+          // ── Connected ────────────────────────────────────────────────
           if (connected.isNotEmpty) ...[
-            const Text('Connected',
-                style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 10),
-            ...connected.map((d) => _DeviceCard(
-                  device: d,
-                  onDisconnect: () => _disconnect(d.id),
-                  onRemove: () => _remove(d.id),
-                  onToggleAlerts: () => _toggleAlerts(d.id),
-                  onPair: () => _pairDevice(d.id),
+            Text('Connected',
+                style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+            const SizedBox(height: AppSpacing.md),
+            ...connected.map((vm) => _DeviceCard(
+                  vm: vm,
+                  onConnect:      () => _connect(vm.id),
+                  onDisconnect:   () => _disconnect(vm.id),
+                  onRemove:       () => _remove(vm.id),
+                  onToggleAlerts: () => _toggleAlerts(vm.id),
                 )),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.lg),
           ],
 
+          // ── Disconnected ─────────────────────────────────────────────
           if (disconnected.isNotEmpty) ...[
-            const Text('Disconnected',
-                style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 10),
-            ...disconnected.map((d) => _DeviceCard(
-                  device: d,
-                  onDisconnect: () => _disconnect(d.id),
-                  onRemove: () => _remove(d.id),
-                  onToggleAlerts: () => _toggleAlerts(d.id),
-                  onPair: () => _pairDevice(d.id),
+            Text('Disconnected',
+                style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+            const SizedBox(height: AppSpacing.md),
+            ...disconnected.map((vm) => _DeviceCard(
+                  vm: vm,
+                  onConnect:      () => _connect(vm.id),
+                  onDisconnect:   () => _disconnect(vm.id),
+                  onRemove:       () => _remove(vm.id),
+                  onToggleAlerts: () => _toggleAlerts(vm.id),
                 )),
           ],
 
-          if (_devices.isEmpty)
+          // ── Empty state ──────────────────────────────────────────────
+          if (_vms.isEmpty)
             Center(
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 60),
-                child: Column(
-                  children: [
-                    const Icon(Icons.bluetooth_searching,
-                        size: 56, color: Color(0xFF94A3B8)),
-                    const SizedBox(height: 12),
-                    const Text('No devices found',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 6),
-                    const Text('Tap Scan to find nearby devices',
-                        style: TextStyle(color: Color(0xFF94A3B8))),
-                  ],
-                ),
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xl4),
+                child: Column(children: [
+                  Container(
+                    width: 72, height: 72,
+                    decoration: BoxDecoration(
+                      color: context.primary.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(AppRadius.xl),
+                    ),
+                    child: Icon(Icons.bluetooth_searching,
+                        size: 32, color: context.primary.withOpacity(0.5)),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  Text('No devices found',
+                      style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text('Tap Scan to find nearby devices',
+                      style: AppTextStyles.body.copyWith(color: context.textMuted)),
+                ]),
               ),
             ),
         ],
       ),
+    );
+  }
+}
+
+// ─── Device card ──────────────────────────────────────────────────────────────
+class _DeviceCard extends StatelessWidget {
+  final _DeviceVM vm;
+  final VoidCallback onConnect, onDisconnect, onRemove, onToggleAlerts;
+
+  const _DeviceCard({
+    required this.vm,
+    required this.onConnect,
+    required this.onDisconnect,
+    required this.onRemove,
+    required this.onToggleAlerts,
+  });
+
+  IconData _iconFor(DeviceType t) => switch (t) {
+    DeviceType.smartwatch => Icons.watch_outlined,
+    DeviceType.earbuds    => Icons.headphones_outlined,
+    DeviceType.tracker    => Icons.location_on_outlined,
+    _                     => Icons.devices_other_outlined,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final isConnected  = vm.connectionState == BluetoothConnectionState.connected;
+    final isConnecting = vm.connectionState == BluetoothConnectionState.connecting;
+
+    final iconBg    = isConnected
+        ? context.primary.withOpacity(0.12)
+        : context.textMuted.withOpacity(0.08);
+    final iconColor = isConnected ? context.primary : context.textMuted;
+
+    return GlassCard(
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      child: Column(children: [
+        Row(children: [
+          Container(
+            width: 48, height: 48,
+            decoration: BoxDecoration(
+                color: iconBg,
+                borderRadius: BorderRadius.circular(AppRadius.md)),
+            child: Icon(_iconFor(vm.type), color: iconColor, size: 24),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(vm.name,
+                  style: AppTextStyles.h4.copyWith(color: context.textPrimary)),
+              const SizedBox(height: AppSpacing.xs),
+              _StatusDot(state: vm.connectionState),
+            ]),
+          ),
+          if (vm.battery > 0) ...[
+            Icon(Icons.battery_full,
+                size: 16,
+                color: vm.battery > 20 ? AppColors.success : AppColors.error),
+            const SizedBox(width: 2),
+            Text('${vm.battery}%',
+                style: AppTextStyles.caption.copyWith(color: context.textSecondary)),
+            const SizedBox(width: AppSpacing.sm),
+          ],
+        ]),
+
+        const SizedBox(height: AppSpacing.md),
+        Divider(color: context.border, height: 1),
+        const SizedBox(height: AppSpacing.md),
+
+        Row(children: [
+          if (isConnected)
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: onDisconnect,
+                icon: const Icon(Icons.bluetooth_disabled, size: 16),
+                label: const Text('Disconnect'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: const BorderSide(color: AppColors.error),
+                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm + 2),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadius.md)),
+                ),
+              ),
+            )
+          else if (isConnecting)
+            Expanded(
+              child: Center(
+                child: Text('Connecting…',
+                    style: AppTextStyles.body.copyWith(color: AppColors.warning)),
+              ),
+            )
+          else
+            Expanded(
+              child: GradientButton(   // ✅ fullWidth: true is fine here — Expanded gives it width
+                label: 'Connect',
+                icon: Icons.bluetooth,
+                onPressed: onConnect,
+                height: 40,
+              ),
+            ),
+
+          const SizedBox(width: AppSpacing.sm),
+
+          IconButton(
+            onPressed: onToggleAlerts,
+            icon: Icon(
+              vm.alertsEnabled
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_off_outlined,
+              color: vm.alertsEnabled ? context.primary : context.textMuted,
+            ),
+            tooltip: vm.alertsEnabled ? 'Mute alerts' : 'Enable alerts',
+          ),
+
+          IconButton(
+            onPressed: onRemove,
+            icon: const Icon(Icons.delete_outline, color: AppColors.error),
+            tooltip: 'Remove device',
+          ),
+        ]),
+      ]),
     );
   }
 }
@@ -262,222 +448,50 @@ class _SummaryChip extends StatelessWidget {
   final String label;
   final Color color;
 
-  const _SummaryChip(
-      {required this.icon, required this.label, required this.color});
+  const _SummaryChip({required this.icon, required this.label, required this.color});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: color.withOpacity(0.20)),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 6),
-          Text(label,
-              style: TextStyle(
-                  color: color, fontWeight: FontWeight.w600, fontSize: 13)),
-        ],
-      ),
-    );
-  }
-}
-
-class _DeviceCard extends StatelessWidget {
-  final ConnectedDevice device;
-  final VoidCallback onDisconnect;
-  final VoidCallback onRemove;
-  final VoidCallback onToggleAlerts;
-  final VoidCallback onPair;
-
-  const _DeviceCard({
-    required this.device,
-    required this.onDisconnect,
-    required this.onRemove,
-    required this.onToggleAlerts,
-    required this.onPair,
-  });
-
-  IconData _iconFor(DeviceType t) {
-    switch (t) {
-      case DeviceType.smartwatch:
-        return Icons.watch_outlined;
-      case DeviceType.earbuds:
-        return Icons.headphones_outlined;
-      case DeviceType.tracker:
-        return Icons.location_on_outlined;
-      default:
-        return Icons.devices_other_outlined;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isConnected = device.status == DeviceStatus.connected;
-    final isPairing = device.status == DeviceStatus.pairing;
-
-    Color iconBg = isConnected
-        ? const Color(0xFFEFF6FF)
-        : const Color(0xFFF1F5F9);
-    Color iconColor = isConnected
-        ? const Color(0xFF3B82F6)
-        : const Color(0xFF94A3B8);
-
-    return GlassCard(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: iconBg,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(_iconFor(device.type),
-                    color: iconColor, size: 24),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(device.name,
-                        style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 2),
-                    _StatusBadge(status: device.status),
-                  ],
-                ),
-              ),
-              if (device.battery > 0) ...[
-                Icon(Icons.battery_full,
-                    size: 16,
-                    color: device.battery > 20
-                        ? const Color(0xFF22C55E)
-                        : const Color(0xFFEF4444)),
-                const SizedBox(width: 2),
-                Text('${device.battery}%',
-                    style: const TextStyle(
-                        fontSize: 13, color: Color(0xFF64748B))),
-                const SizedBox(width: 8),
-              ],
-            ],
-          ),
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          const SizedBox(height: 12),
-
-          Row(
-            children: [
-              if (isConnected)
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: onDisconnect,
-                    icon: const Icon(Icons.bluetooth_disabled, size: 16),
-                    label: const Text('Disconnect'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFEF4444),
-                      side: const BorderSide(color: Color(0xFFEF4444)),
-                      padding:
-                          const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-                )
-              else if (!isPairing)
-                Expanded(
-                  child: GradientButton(
-                    label: 'Connect',
-                    icon: Icons.bluetooth,
-                    onPressed: onPair,
-                    height: 40,
-                  ),
-                )
-              else
-                const Expanded(
-                  child: Center(
-                    child: Text('Pairing...',
-                        style: TextStyle(color: Color(0xFFF59E0B))),
-                  ),
-                ),
-
-              const SizedBox(width: 8),
-
-              IconButton(
-                onPressed: onToggleAlerts,
-                icon: Icon(
-                  device.alertsEnabled
-                      ? Icons.notifications_active_outlined
-                      : Icons.notifications_off_outlined,
-                  color: device.alertsEnabled
-                      ? const Color(0xFF3B82F6)
-                      : const Color(0xFF94A3B8),
-                ),
-                tooltip:
-                    device.alertsEnabled ? 'Mute alerts' : 'Enable alerts',
-              ),
-
-              IconButton(
-                onPressed: onRemove,
-                icon: const Icon(Icons.delete_outline, color: Colors.red),
-                tooltip: 'Remove device',
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatusBadge extends StatelessWidget {
-  final DeviceStatus status;
-
-  const _StatusBadge({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    Color color;
-    String label;
-    bool pulse = false;
-
-    switch (status) {
-      case DeviceStatus.connected:
-        color = const Color(0xFF22C55E);
-        label = 'Connected';
-        pulse = true;
-        break;
-      case DeviceStatus.pairing:
-        color = const Color(0xFFF59E0B);
-        label = 'Pairing…';
-        break;
-      default:
-        color = const Color(0xFF94A3B8);
-        label = 'Disconnected';
-    }
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 7,
-          height: 7,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 5),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, color: color, size: 16),
+        const SizedBox(width: AppSpacing.sm),
         Text(label,
-            style: TextStyle(
-                color: color, fontSize: 12, fontWeight: FontWeight.w500)),
-      ],
+            style: AppTextStyles.label.copyWith(
+                color: color, fontWeight: FontWeight.w600)),
+      ]),
     );
+  }
+}
+
+class _StatusDot extends StatelessWidget {
+  final BluetoothConnectionState state;
+  const _StatusDot({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final (Color color, String label) = switch (state) {
+      BluetoothConnectionState.connected    => (AppColors.success, 'Connected'),
+      BluetoothConnectionState.connecting   => (AppColors.warning, 'Connecting…'),
+      BluetoothConnectionState.disconnecting=> (AppColors.warning, 'Disconnecting…'),
+      _                                     => (context.textMuted, 'Disconnected'),
+    };
+
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(
+          width: 7, height: 7,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      const SizedBox(width: AppSpacing.xs),
+      Text(label,
+          style: AppTextStyles.caption.copyWith(
+              color: color, fontWeight: FontWeight.w500)),
+    ]);
   }
 }

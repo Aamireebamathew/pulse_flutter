@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/supabase_service.dart';
 import '../../widgets/common_widgets.dart';
+import '../../utils/app_theme.dart';
 
 class OverviewScreen extends StatefulWidget {
   const OverviewScreen({super.key});
@@ -14,10 +15,10 @@ class OverviewScreen extends StatefulWidget {
 }
 
 class _OverviewScreenState extends State<OverviewScreen> {
-  int _totalObjects = 0;
+  int _totalObjects     = 0;
   int _recentDetections = 0;
-  int _activeAlerts = 0;
-  int _detectionRate = 0;
+  int _activeAlerts     = 0;
+  int _detectionRate    = 0;
   List<Map<String, dynamic>> _recentActivity = [];
   bool _loading = true;
 
@@ -32,18 +33,10 @@ class _OverviewScreenState extends State<OverviewScreen> {
     if (user == null) return;
 
     final objects = await SupabaseService.getObjects(user.id);
-
-    final since =
-        DateTime.now().subtract(const Duration(hours: 24));
+    final since   = DateTime.now().subtract(const Duration(hours: 24));
     final recentLogs = await SupabaseService.getActivityLogs(
-      user.id,
-      limit: 0,
-      since: since,
-    );
-    final allLogs = await SupabaseService.getActivityLogs(
-      user.id,
-      limit: 5,
-    );
+        user.id, limit: 0, since: since);
+    final allLogs = await SupabaseService.getActivityLogs(user.id, limit: 5);
 
     final activeAlerts = recentLogs
         .where((l) =>
@@ -52,14 +45,14 @@ class _OverviewScreenState extends State<OverviewScreen> {
         .length;
 
     setState(() {
-      _totalObjects = objects.length;
+      _totalObjects     = objects.length;
       _recentDetections = recentLogs.length;
-      _activeAlerts = activeAlerts;
-      _detectionRate = objects.isNotEmpty
+      _activeAlerts     = activeAlerts;
+      _detectionRate    = objects.isNotEmpty
           ? (recentLogs.length / objects.length * 100).round()
           : 0;
       _recentActivity = allLogs;
-      _loading = false;
+      _loading        = false;
     });
   }
 
@@ -73,80 +66,77 @@ class _OverviewScreenState extends State<OverviewScreen> {
       onRefresh: _loadData,
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(AppSpacing.xl),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Dashboard Overview',
-              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Track your belongings and monitor their activity',
-              style: TextStyle(color: Color(0xFF64748B), fontSize: 15),
-            ),
-            const SizedBox(height: 24),
+            Text('Dashboard Overview',
+                style: AppTextStyles.display
+                    .copyWith(color: context.textPrimary)),
+            const SizedBox(height: AppSpacing.xs),
+            Text('Track your belongings and monitor their activity',
+                style: AppTextStyles.body
+                    .copyWith(color: context.textMuted)),
+            const SizedBox(height: AppSpacing.xl2),
 
-            // Stats grid
+            // ── Stats grid ──────────────────────────────────────────────────
             GridView.count(
               crossAxisCount: 2,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 1.35,
+              crossAxisSpacing: AppSpacing.md,
+              mainAxisSpacing: AppSpacing.md,
+              childAspectRatio: 1.3,
               children: [
                 StatCard(
                   icon: Icons.inventory_2_outlined,
                   label: 'Total Objects',
                   value: '$_totalObjects',
-                  iconBgColor: const Color(0xFFEFF6FF),
-                  iconColor: const Color(0xFF3B82F6),
+                  iconBgColor: AppColors.blue500.withOpacity(0.12),
+                  iconColor: AppColors.blue500,
                 ),
                 StatCard(
                   icon: Icons.multiline_chart,
                   label: 'Recent Detections',
                   value: '$_recentDetections',
-                  iconBgColor: const Color(0xFFF0FDF4),
-                  iconColor: const Color(0xFF22C55E),
+                  iconBgColor: AppColors.success.withOpacity(0.12),
+                  iconColor: AppColors.success,
                   subtitle: 'Last 24 hours',
                 ),
                 StatCard(
                   icon: Icons.notifications_active_outlined,
                   label: 'Active Alerts',
                   value: '$_activeAlerts',
-                  iconBgColor: const Color(0xFFFDF2F8),
-                  iconColor: const Color(0xFFEC4899),
+                  iconBgColor: AppColors.error.withOpacity(0.12),
+                  iconColor: AppColors.error,
                 ),
                 StatCard(
                   icon: Icons.trending_up,
                   label: 'Detection Rate',
                   value: '$_detectionRate%',
-                  iconBgColor: const Color(0xFFF5F3FF),
-                  iconColor: const Color(0xFF8B5CF6),
+                  iconBgColor: AppColors.purple500.withOpacity(0.12),
+                  iconColor: AppColors.purple500,
                 ),
               ],
             ),
 
-            const SizedBox(height: 20),
+            const SizedBox(height: AppSpacing.xl),
 
+            // ── Recent activity ─────────────────────────────────────────────
             GlassCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Recent Activity',
-                    style: TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 16),
+                  Text('Recent Activity',
+                      style: AppTextStyles.h2
+                          .copyWith(color: context.textPrimary)),
+                  const SizedBox(height: AppSpacing.lg),
 
                   if (_recentActivity.isEmpty)
                     _buildEmptyActivity()
                   else
-                    ..._recentActivity.map((activity) =>
-                        _ActivityRow(activity: activity)),
+                    ..._recentActivity.map(
+                        (a) => _ActivityRow(activity: a)),
                 ],
               ),
             ),
@@ -158,17 +148,18 @@ class _OverviewScreenState extends State<OverviewScreen> {
 
   Widget _buildEmptyActivity() {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 32),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xl3),
       child: Column(
         children: [
-          const Icon(Icons.timeline, size: 48, color: Color(0xFF94A3B8)),
-          const SizedBox(height: 12),
-          const Text('No recent activity',
-              style: TextStyle(color: Color(0xFF64748B))),
-          const SizedBox(height: 4),
+          Icon(Icons.timeline, size: 48, color: context.textMuted),
+          const SizedBox(height: AppSpacing.md),
+          Text('No recent activity',
+              style: AppTextStyles.body
+                  .copyWith(color: context.textSecondary)),
+          const SizedBox(height: AppSpacing.xs),
           Text('Start tracking objects to see activity here',
-              style: TextStyle(
-                  fontSize: 13, color: Colors.grey.shade500)),
+              style: AppTextStyles.bodySm
+                  .copyWith(color: context.textMuted)),
         ],
       ),
     );
@@ -177,69 +168,61 @@ class _OverviewScreenState extends State<OverviewScreen> {
 
 class _ActivityRow extends StatelessWidget {
   final Map<String, dynamic> activity;
-
   const _ActivityRow({required this.activity});
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final type = activity['activity_type'] as String? ?? '';
-    final location = activity['location'] as String? ?? 'Unknown location';
+    final type      = activity['activity_type'] as String? ?? '';
+    final location  = activity['location'] as String? ?? 'Unknown location';
     final createdAt = activity['created_at'] as String? ?? '';
 
-    Color dotColor = const Color(0xFF22C55E);
-    if (type == 'missing') dotColor = Colors.red;
-    if (type == 'unusual_activity') dotColor = Colors.orange;
+    Color dotColor = AppColors.success;
+    if (type == 'missing') dotColor = AppColors.error;
+    if (type == 'unusual_activity') dotColor = AppColors.warning;
 
     String timeStr = '';
     if (createdAt.isNotEmpty) {
       try {
-        final dt = DateTime.parse(createdAt).toLocal();
-        timeStr = DateFormat.jm().format(dt);
+        timeStr = DateFormat.jm().format(DateTime.parse(createdAt).toLocal());
       } catch (_) {}
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm + 2),
+      padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
-        color: isDark
+        color: context.isDark
             ? Colors.white.withOpacity(0.04)
-            : Colors.black.withOpacity(0.03),
-        borderRadius: BorderRadius.circular(14),
+            : Colors.black.withOpacity(0.025),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.border, width: 1),
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+      child: Row(children: [
+        Container(
+          width: 8, height: 8,
+          decoration:
+              BoxDecoration(color: dotColor, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: AppSpacing.md),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                type.replaceAll('_', ' ').toUpperCase(),
+                style: AppTextStyles.h4
+                    .copyWith(color: context.textPrimary),
+              ),
+              Text(location,
+                  style: AppTextStyles.bodySm
+                      .copyWith(color: context.textMuted)),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  type.replaceAll('_', ' ').toUpperCase(),
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-                Text(
-                  location,
-                  style: const TextStyle(
-                      fontSize: 12, color: Color(0xFF94A3B8)),
-                ),
-              ],
-            ),
-          ),
-          Text(
-            timeStr,
-            style: const TextStyle(
-                fontSize: 12, color: Color(0xFF94A3B8)),
-          ),
-        ],
-      ),
+        ),
+        Text(timeStr,
+            style:
+                AppTextStyles.caption.copyWith(color: context.textMuted)),
+      ]),
     );
   }
 }

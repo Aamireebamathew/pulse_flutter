@@ -6,17 +6,13 @@ import 'package:provider/provider.dart';
 
 import '../../providers/auth_provider.dart';
 import '../../services/supabase_service.dart';
+import '../../services/notification_service.dart';
+import '../../screens/dashboard/notifications_screen.dart';
 import '../../widgets/common_widgets.dart';
 
-// ─── Detection type ───────────────────────────────────────────────────────────
 enum DetectionType { normal, unusual, unregistered }
 
-// ─── COCO class aliases ───────────────────────────────────────────────────────
-// Maps what a user might register as → COCO class names the model detects.
-// NOTE: 'book' intentionally does NOT alias to laptop/computer to avoid
-// false positives when different books/items of same class are detected.
 const Map<String, List<String>> _kAliases = {
-  // Electronics
   'phone':          ['cell phone'],
   'mobile':         ['cell phone'],
   'smartphone':     ['cell phone'],
@@ -34,26 +30,22 @@ const Map<String, List<String>> _kAliases = {
   'television':     ['tv'],
   'remote':         ['remote'],
   'remote control': ['remote'],
-  // Audio — COCO has no airpods class; 'remote' is the closest small object
   'airpods':        ['remote'],
   'earbuds':        ['remote'],
   'earphones':      ['remote'],
   'headphones':     ['remote'],
   'headset':        ['remote'],
-  // Bags
   'backpack':       ['backpack'],
   'bag':            ['backpack', 'handbag'],
   'school bag':     ['backpack'],
   'handbag':        ['handbag'],
   'purse':          ['handbag'],
   'wallet':         ['handbag'],
-  // Books / stationery — strict: only match if user registers exactly "book"
   'book':           ['book'],
   'notebook':       ['book'],
   'diary':          ['book'],
   'journal':        ['book'],
   'textbook':       ['book'],
-  // Bottles / cups
   'bottle':         ['bottle'],
   'water bottle':   ['bottle'],
   'flask':          ['bottle'],
@@ -61,14 +53,12 @@ const Map<String, List<String>> _kAliases = {
   'mug':            ['cup'],
   'glass':          ['cup', 'wine glass'],
   'tumbler':        ['cup'],
-  // Furniture
   'chair':          ['chair'],
   'sofa':           ['couch'],
   'couch':          ['couch'],
   'table':          ['dining table'],
   'desk':           ['dining table'],
   'bed':            ['bed'],
-  // Kitchen
   'fridge':         ['refrigerator'],
   'refrigerator':   ['refrigerator'],
   'microwave':      ['microwave'],
@@ -78,17 +68,14 @@ const Map<String, List<String>> _kAliases = {
   'fork':           ['fork'],
   'spoon':          ['spoon'],
   'bowl':           ['bowl'],
-  // Clothing / accessories
   'umbrella':       ['umbrella'],
   'tie':            ['tie'],
   'suitcase':       ['suitcase'],
   'luggage':        ['suitcase'],
-  // Pets
   'cat':            ['cat'],
   'kitten':         ['cat'],
   'dog':            ['dog'],
   'puppy':          ['dog'],
-  // Sports / toys
   'ball':           ['sports ball'],
   'football':       ['sports ball'],
   'basketball':     ['sports ball'],
@@ -96,17 +83,13 @@ const Map<String, List<String>> _kAliases = {
   'teddy bear':     ['teddy bear'],
   'bicycle':        ['bicycle'],
   'bike':           ['bicycle'],
-  // Plants
   'plant':          ['potted plant'],
   'flower':         ['potted plant'],
-  // People
   'person':         ['person'],
   'human':          ['person'],
-  // Vehicle
   'car':            ['car'],
 };
 
-// Full COCO-SSD class list used by the simulation
 const List<String> _kCocoClasses = [
   'cell phone', 'laptop', 'keyboard', 'mouse', 'remote', 'book',
   'backpack', 'handbag', 'bottle', 'cup', 'chair', 'couch',
@@ -117,8 +100,6 @@ const List<String> _kCocoClasses = [
   'fork', 'spoon', 'wine glass', 'sports ball',
 ];
 
-// Pairs of classes that look visually similar — require 75 %+ confidence
-// before treating as a match to avoid false positives
 const Map<String, List<String>> _kAmbiguous = {
   'book':       ['laptop', 'keyboard'],
   'laptop':     ['book'],
@@ -128,14 +109,13 @@ const Map<String, List<String>> _kAmbiguous = {
   'backpack':   ['handbag'],
 };
 
-// ─── Result model ─────────────────────────────────────────────────────────────
 class DetectionResult {
   final String cocoClass;
   final String displayName;
   final String usualLocation;
   final double confidence;
   final DetectionType type;
-  final Rect boundingBox; // normalized 0..1
+  final Rect boundingBox;
 
   const DetectionResult({
     required this.cocoClass,
@@ -147,28 +127,18 @@ class DetectionResult {
   });
 }
 
-// ─── Matching helpers ─────────────────────────────────────────────────────────
-
 Map<String, dynamic>? _findMatch(
   String cocoClass,
   List<Map<String, dynamic>> objects,
   double confidence,
 ) {
   if (confidence < 0.60) return null;
-
   final cl = cocoClass.toLowerCase().trim();
-
   for (final obj in objects) {
     final name = (obj['object_name'] as String? ?? '').toLowerCase().trim();
-
-    // Tier 1 — exact class name match
     if (name == cl) return obj;
-
-    // Tier 2 — registered name is an alias key → check if COCO class is in targets
     final aliasTargets = _kAliases[name] ?? [];
     if (aliasTargets.contains(cl)) return obj;
-
-    // Tier 3 — COCO class is an alias key → check if registered name is in targets
     final reverseTargets = _kAliases[cl] ?? [];
     if (reverseTargets.any((t) => name == t || name.contains(t))) return obj;
   }
@@ -186,7 +156,6 @@ bool _passesAmbiguityCheck(
   return true;
 }
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
 class LiveCameraScreen extends StatefulWidget {
   const LiveCameraScreen({super.key});
 
@@ -196,9 +165,9 @@ class LiveCameraScreen extends StatefulWidget {
 
 class _LiveCameraScreenState extends State<LiveCameraScreen> {
   CameraController? _controller;
-  bool _cameraActive = false;
-  bool _audioEnabled = true;
-  bool _initializing = false;
+  bool _cameraActive  = false;
+  bool _audioEnabled  = true;
+  bool _initializing  = false;
   String? _cameraError;
 
   List<DetectionResult> _detections = [];
@@ -206,13 +175,15 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   Timer? _detectionTimer;
   final _rng = Random();
 
+  final Map<String, Rect> _stableBoxes    = {};
+  final Map<String, int>  _lastLoggedAt   = {};
+  final Map<String, int>  _lastNotifiedAt = {}; // 60s cooldown per object
+
   String _currentLocation = 'Living Room';
   final List<String> _locationOptions = [
     'Living Room', 'Bedroom', 'Kitchen', 'Bathroom',
     'Office', 'Garage', 'Hallway', 'Other',
   ];
-
-  final Map<String, int> _lastLoggedAt = {};
 
   @override
   void initState() {
@@ -231,7 +202,12 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     final user = context.read<AuthProvider>().user;
     if (user == null) return;
     final objects = await SupabaseService.getObjects(user.id);
-    if (mounted) setState(() => _registeredObjects = objects);
+    if (mounted) {
+      setState(() {
+        _registeredObjects = objects;
+        _stableBoxes.clear();
+      });
+    }
   }
 
   Future<void> _startCamera() async {
@@ -262,51 +238,49 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   }
 
   void _startDetectionLoop() {
-    _detectionTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _runSimulatedDetection();
+    _detectionTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       if (_cameraActive) _runSimulatedDetection();
     });
   }
 
-  /// Simulated detection loop.
-  /// Replace with real tflite_flutter inference when ready:
-  ///   final preds = await _model.runModelOnFrame(cameraImage);
-  ///   // preds = List of {class, confidence, bbox}
+  Rect _stableBox(String key, List<Rect> alreadyUsed) {
+    if (_stableBoxes.containsKey(key)) return _stableBoxes[key]!;
+    final box = _generateBox(alreadyUsed);
+    _stableBoxes[key] = box;
+    return box;
+  }
+
   Future<void> _runSimulatedDetection() async {
-    final results = <DetectionResult>[];
+    final results   = <DetectionResult>[];
     final usedBoxes = <Rect>[];
 
-    // ── Generate COCO candidates from registered objects ──────────────────
     for (final obj in _registeredObjects) {
-      final name = (obj['object_name'] as String? ?? '').toLowerCase().trim();
+      final name        = (obj['object_name'] as String? ?? '').toLowerCase().trim();
       final cocoTargets = _kAliases[name] ?? [name];
-      final cocoClass = cocoTargets.first;
+      final cocoClass   = cocoTargets.first;
       if (!_kCocoClasses.contains(cocoClass)) continue;
 
-      final conf = 0.65 + _rng.nextDouble() * 0.30; // 65–95 %
-      final box = _generateBox(usedBoxes);
+      final conf = (0.82 + (_rng.nextDouble() - 0.5) * 0.06).clamp(0.60, 0.98);
+      final box  = _stableBox(name, usedBoxes);
       usedBoxes.add(box);
 
       final matched = _findMatch(cocoClass, _registeredObjects, conf);
 
       if (matched != null) {
         final regName = matched['object_name'] as String? ?? cocoClass;
-
         if (!_passesAmbiguityCheck(cocoClass, regName, conf)) {
           results.add(DetectionResult(
-            cocoClass: cocoClass,
-            displayName: cocoClass,
-            usualLocation: '',
-            confidence: conf,
-            type: DetectionType.unregistered,
-            boundingBox: box,
+            cocoClass: cocoClass, displayName: cocoClass,
+            usualLocation: '', confidence: conf,
+            type: DetectionType.unregistered, boundingBox: box,
           ));
           continue;
         }
 
-        final usualLoc =
-            (matched['usual_location'] as String? ?? '').toLowerCase().trim();
+        final usualLoc   = (matched['usual_location'] as String? ?? '').toLowerCase().trim();
         final currentLoc = _currentLocation.toLowerCase().trim();
-        final isUsual = usualLoc.isEmpty ||
+        final isUsual    = usualLoc.isEmpty ||
             currentLoc.contains(usualLoc) ||
             usualLoc.contains(currentLoc);
 
@@ -320,60 +294,73 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         ));
       } else {
         results.add(DetectionResult(
-          cocoClass: cocoClass,
-          displayName: cocoClass,
-          usualLocation: '',
-          confidence: conf,
-          type: DetectionType.unregistered,
-          boundingBox: box,
+          cocoClass: cocoClass, displayName: cocoClass,
+          usualLocation: '', confidence: conf,
+          type: DetectionType.unregistered, boundingBox: box,
         ));
       }
     }
 
-    // ── Add 1–2 random unregistered detections ────────────────────────────
-    final randomCount = _rng.nextInt(2) + 1;
-    for (int i = 0; i < randomCount; i++) {
-      final cls = _kCocoClasses[_rng.nextInt(_kCocoClasses.length)];
-      final conf = 0.45 + _rng.nextDouble() * 0.40;
-      // Only show if not already matched as registered
-      final alreadyMatched = results.any((r) => r.cocoClass == cls &&
-          r.type != DetectionType.unregistered);
-      if (alreadyMatched) continue;
-      final box = _generateBox(usedBoxes);
-      usedBoxes.add(box);
-      results.add(DetectionResult(
-        cocoClass: cls,
-        displayName: cls,
-        usualLocation: '',
-        confidence: conf,
-        type: DetectionType.unregistered,
-        boundingBox: box,
-      ));
+    // Random unregistered detection
+    if (_rng.nextBool()) {
+      final registeredClasses = results
+          .where((r) => r.type != DetectionType.unregistered)
+          .map((r) => r.cocoClass).toSet();
+      final candidates = _kCocoClasses
+          .where((c) => !registeredClasses.contains(c)).toList();
+      if (candidates.isNotEmpty) {
+        final cls  = candidates[_rng.nextInt(candidates.length)];
+        final conf = 0.45 + _rng.nextDouble() * 0.30;
+        final box  = _generateBox(usedBoxes);
+        usedBoxes.add(box);
+        results.add(DetectionResult(
+          cocoClass: cls, displayName: cls,
+          usualLocation: '', confidence: conf,
+          type: DetectionType.unregistered, boundingBox: box,
+        ));
+      }
     }
 
     if (mounted) setState(() => _detections = results);
 
-    // ── Log to Supabase (throttled 30 s per object) ───────────────────────
+    final now  = DateTime.now().millisecondsSinceEpoch;
     final user = context.read<AuthProvider>().user;
-    if (user == null) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
 
     for (final det in results) {
       if (det.type == DetectionType.unregistered) continue;
       final key = det.displayName;
+
+      // ── Push notification for unusual detections (60s cooldown) ───────────
+      if (det.type == DetectionType.unusual &&
+          now - (_lastNotifiedAt[key] ?? 0) >= 60000) {
+        _lastNotifiedAt[key] = now;
+
+        await NotificationService.instance.showUnusualLocationAlert(
+          objectName:    det.displayName,
+          foundLocation: _currentLocation,
+          usualLocation: det.usualLocation,
+        );
+        logNotification(
+          type:  NotifType.unusual,
+          title: '⚠️ Unusual Location Detected',
+          body:  '${det.displayName} found in $_currentLocation'
+                 ' — usually in ${det.usualLocation}',
+        );
+      }
+
+      // ── Supabase log (30s cooldown) ────────────────────────────────────────
       if (now - (_lastLoggedAt[key] ?? 0) < 30000) continue;
       _lastLoggedAt[key] = now;
 
       await SupabaseService.client.from('activity_logs').insert({
-        'user_id': user.id,
+        'user_id': user?.id,
         'activity_type': det.type == DetectionType.unusual
-            ? 'unusual_activity'
-            : 'detected',
+            ? 'unusual_activity' : 'detected',
         'location': _currentLocation,
         'confidence': det.confidence,
         'metadata': {
-          'object_name': det.displayName,
-          'coco_class': det.cocoClass,
+          'object_name':    det.displayName,
+          'coco_class':     det.cocoClass,
           'detection_type': det.type.name,
           'usual_location': det.usualLocation,
         },
@@ -382,15 +369,16 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   }
 
   Rect _generateBox(List<Rect> existing) {
-    for (int t = 0; t < 20; t++) {
-      final w = 0.22 + _rng.nextDouble() * 0.25;
-      final h = 0.22 + _rng.nextDouble() * 0.25;
+    for (int t = 0; t < 30; t++) {
+      final w = 0.20 + _rng.nextDouble() * 0.22;
+      final h = 0.20 + _rng.nextDouble() * 0.22;
       final x = _rng.nextDouble() * (1 - w);
       final y = _rng.nextDouble() * (1 - h);
       final c = Rect.fromLTWH(x, y, w, h);
       if (!existing.any((e) => e.overlaps(c))) return c;
     }
-    return Rect.fromLTWH(_rng.nextDouble() * 0.5, _rng.nextDouble() * 0.5, 0.3, 0.3);
+    return Rect.fromLTWH(
+        _rng.nextDouble() * 0.5, _rng.nextDouble() * 0.5, 0.28, 0.28);
   }
 
   Color _color(DetectionType t) {
@@ -414,8 +402,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final normal = _detections.where((d) => d.type == DetectionType.normal).length;
-    final unusual = _detections.where((d) => d.type == DetectionType.unusual).length;
+    final normal       = _detections.where((d) => d.type == DetectionType.normal).length;
+    final unusual      = _detections.where((d) => d.type == DetectionType.unusual).length;
     final unregistered = _detections.where((d) => d.type == DetectionType.unregistered).length;
 
     return SingleChildScrollView(
@@ -429,7 +417,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
               style: TextStyle(color: Color(0xFF64748B), fontSize: 15)),
           const SizedBox(height: 16),
 
-          // Location picker
           GlassCard(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(children: [
@@ -445,11 +432,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                     value: _currentLocation,
                     isExpanded: true,
                     items: _locationOptions
-                        .map((l) =>
-                            DropdownMenuItem(value: l, child: Text(l)))
+                        .map((l) => DropdownMenuItem(value: l, child: Text(l)))
                         .toList(),
-                    onChanged: (v) =>
-                        setState(() => _currentLocation = v!),
+                    onChanged: (v) => setState(() => _currentLocation = v!),
                   ),
                 ),
               ),
@@ -457,7 +442,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Camera card
           GlassCard(
             padding: EdgeInsets.zero,
             child: Column(children: [
@@ -477,9 +461,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                     child: GradientButton(
                       label: _initializing
                           ? 'Starting...'
-                          : _cameraActive
-                              ? 'Stop Camera'
-                              : 'Start Camera',
+                          : _cameraActive ? 'Stop Camera' : 'Start Camera',
                       icon: _cameraActive
                           ? Icons.videocam_off_outlined
                           : Icons.videocam_outlined,
@@ -488,10 +470,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                           : (_cameraActive ? _stopCamera : _startCamera),
                       loading: _initializing,
                       gradient: _cameraActive
-                          ? [
-                              const Color(0xFFEF4444),
-                              const Color(0xFFDC2626)
-                            ]
+                          ? [const Color(0xFFEF4444), const Color(0xFFDC2626)]
                           : null,
                       height: 46,
                     ),
@@ -515,7 +494,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Legend
           GlassCard(
             padding: const EdgeInsets.all(14),
             child: const Row(
@@ -529,7 +507,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Stats
           Row(children: [
             Expanded(child: _StatMini(
               icon: Icons.check_circle_outline,
@@ -550,7 +527,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             )),
           ]),
 
-          // Detection list
           if (_detections.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text('Detections',
@@ -560,39 +536,33 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                 detection: d, color: _color(d.type), sublabel: _sublabel(d))),
           ],
 
-          // Info box
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
               color: const Color(0xFF3B82F6).withOpacity(0.08),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                  color: const Color(0xFF3B82F6).withOpacity(0.2)),
+              border: Border.all(color: const Color(0xFF3B82F6).withOpacity(0.2)),
             ),
             child: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(children: [
-                  Icon(Icons.info_outline,
-                      color: Color(0xFF3B82F6), size: 16),
+                  Icon(Icons.info_outline, color: Color(0xFF3B82F6), size: 16),
                   SizedBox(width: 8),
                   Text('How Detection Works',
                       style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF3B82F6))),
+                          fontWeight: FontWeight.w600, color: Color(0xFF3B82F6))),
                 ]),
                 SizedBox(height: 8),
                 Text(
                   '• 🟢 Green = your object in its usual place\n'
                   '• 🔴 Red = your object found in wrong location\n'
                   '• 🔵 Blue = detected object not in your registry\n'
-                  '• Similar items (e.g. different books) need 75%+ confidence to match\n'
-                  '• Register objects by their common name: "laptop" not "MacBook", "phone" not "Samsung"',
+                  '• Similar items need 75%+ confidence to match\n'
+                  '• Register objects by common name: "laptop" not "MacBook"',
                   style: TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF64748B),
-                      height: 1.6),
+                      fontSize: 12, color: Color(0xFF64748B), height: 1.6),
                 ),
               ],
             ),
@@ -620,8 +590,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             OutlinedButton.icon(
               onPressed: _startCamera,
               icon: const Icon(Icons.refresh, color: Colors.white70),
-              label: const Text('Retry',
-                  style: TextStyle(color: Colors.white70)),
+              label: const Text('Retry', style: TextStyle(color: Colors.white70)),
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: Colors.white24),
                 shape: RoundedRectangleBorder(
@@ -640,16 +609,13 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             CircularProgressIndicator(color: Color(0xFF3B82F6)),
             SizedBox(height: 16),
-            Text('Starting camera...',
-                style: TextStyle(color: Colors.white54)),
+            Text('Starting camera...', style: TextStyle(color: Colors.white54)),
           ]),
         ),
       );
     }
 
-    if (_cameraActive &&
-        _controller != null &&
-        _controller!.value.isInitialized) {
+    if (_cameraActive && _controller != null && _controller!.value.isInitialized) {
       return LayoutBuilder(builder: (ctx, constraints) {
         final w = constraints.maxWidth;
         final h = constraints.maxHeight;
@@ -660,37 +626,28 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             ..._detections.map((det) {
               final b = det.boundingBox;
               return Positioned(
-                left: b.left * w,
-                top: b.top * h,
-                width: b.width * w,
-                height: b.height * h,
+                left: b.left * w, top: b.top * h,
+                width: b.width * w, height: b.height * h,
                 child: _BoundingBox(
-                  label: det.displayName,
-                  sublabel: _sublabel(det),
-                  color: _color(det.type),
-                  confidence: det.confidence,
+                  label: det.displayName, sublabel: _sublabel(det),
+                  color: _color(det.type), confidence: det.confidence,
                 ),
               );
             }),
             Positioned(
               top: 12, right: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
                     color: Colors.black54,
                     borderRadius: BorderRadius.circular(20)),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Container(
-                    width: 8, height: 8,
-                    decoration: const BoxDecoration(
-                        color: Color(0xFF22C55E),
-                        shape: BoxShape.circle),
-                  ),
+                  Container(width: 8, height: 8,
+                      decoration: const BoxDecoration(
+                          color: Color(0xFF22C55E), shape: BoxShape.circle)),
                   const SizedBox(width: 6),
                   const Text('Scanning',
-                      style:
-                          TextStyle(color: Colors.white, fontSize: 12)),
+                      style: TextStyle(color: Colors.white, fontSize: 12)),
                 ]),
               ),
             ),
@@ -703,8 +660,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       color: const Color(0xFF0F172A),
       child: Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.videocam_off_outlined,
-              color: Colors.white38, size: 48),
+          const Icon(Icons.videocam_off_outlined, color: Colors.white38, size: 48),
           const SizedBox(height: 12),
           const Text('Camera is off',
               style: TextStyle(color: Colors.white54, fontSize: 16)),
@@ -715,8 +671,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           OutlinedButton.icon(
             onPressed: _startCamera,
             icon: const Icon(Icons.play_arrow, color: Colors.white70),
-            label: const Text('Start',
-                style: TextStyle(color: Colors.white70)),
+            label: const Text('Start', style: TextStyle(color: Colors.white70)),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.white24),
               shape: RoundedRectangleBorder(
@@ -729,121 +684,85 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   }
 }
 
-// ─── Raw detection (internal) ─────────────────────────────────────────────────
-class _RawDetection {
-  final String cocoClass;
-  final double confidence;
-  _RawDetection({required this.cocoClass, required this.confidence});
-}
-
-// ─── Bounding box ─────────────────────────────────────────────────────────────
 class _BoundingBox extends StatelessWidget {
-  final String label;
-  final String sublabel;
+  final String label, sublabel;
   final Color color;
   final double confidence;
-
-  const _BoundingBox({
-    required this.label,
-    required this.sublabel,
-    required this.color,
-    required this.confidence,
-  });
+  const _BoundingBox({required this.label, required this.sublabel,
+      required this.color, required this.confidence});
 
   @override
   Widget build(BuildContext context) {
     final pct = (confidence * 100).toStringAsFixed(0);
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Container(
+    return Stack(clipBehavior: Clip.none, children: [
+      Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: color, width: 2.5),
+          borderRadius: BorderRadius.circular(6),
+          color: color.withOpacity(0.07),
+        ),
+      ),
+      Positioned(top: -2, left: -2,
+          child: _CornerAccent(color: color, top: true,  left: true)),
+      Positioned(top: -2, right: -2,
+          child: _CornerAccent(color: color, top: true,  left: false)),
+      Positioned(bottom: -2, left: -2,
+          child: _CornerAccent(color: color, top: false, left: true)),
+      Positioned(bottom: -2, right: -2,
+          child: _CornerAccent(color: color, top: false, left: false)),
+      Positioned(
+        top: -1, left: 0,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 160),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            border: Border.all(color: color, width: 2.5),
-            borderRadius: BorderRadius.circular(6),
-            color: color.withOpacity(0.07),
+            color: color,
+            borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(4), bottomRight: Radius.circular(8)),
+            boxShadow: [BoxShadow(color: color.withOpacity(0.4),
+                blurRadius: 6, offset: const Offset(0, 2))],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('${label.toUpperCase()}  $pct%',
+                  style: const TextStyle(color: Colors.white, fontSize: 10,
+                      fontWeight: FontWeight.w800, letterSpacing: 0.3),
+                  overflow: TextOverflow.ellipsis),
+              if (sublabel.isNotEmpty)
+                Text(sublabel,
+                    style: const TextStyle(color: Colors.white70, fontSize: 9),
+                    overflow: TextOverflow.ellipsis),
+            ],
           ),
         ),
-        Positioned(top: -2, left: -2,
-            child: _CornerAccent(color: color, top: true,  left: true)),
-        Positioned(top: -2, right: -2,
-            child: _CornerAccent(color: color, top: true,  left: false)),
-        Positioned(bottom: -2, left: -2,
-            child: _CornerAccent(color: color, top: false, left: true)),
-        Positioned(bottom: -2, right: -2,
-            child: _CornerAccent(color: color, top: false, left: false)),
-        Positioned(
-          top: -1, left: 0,
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 160),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4),
-                bottomRight: Radius.circular(8),
-              ),
-              boxShadow: [
-                BoxShadow(
-                    color: color.withOpacity(0.4),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2))
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '${label.toUpperCase()}  $pct%',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.3),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (sublabel.isNotEmpty)
-                  Text(sublabel,
-                      style: const TextStyle(
-                          color: Colors.white70, fontSize: 9),
-                      overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
+      ),
+    ]);
   }
 }
 
 class _CornerAccent extends StatelessWidget {
   final Color color;
   final bool top, left;
-  const _CornerAccent(
-      {required this.color, required this.top, required this.left});
+  const _CornerAccent({required this.color, required this.top, required this.left});
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: 14, height: 14,
-        child: CustomPaint(
-            painter: _CornerPainter(color: color, top: top, left: left)),
-      );
+      width: 14, height: 14,
+      child: CustomPaint(
+          painter: _CornerPainter(color: color, top: top, left: left)));
 }
 
 class _CornerPainter extends CustomPainter {
   final Color color;
   final bool top, left;
-  _CornerPainter(
-      {required this.color, required this.top, required this.left});
+  _CornerPainter({required this.color, required this.top, required this.left});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final p = Paint()
-      ..color = color
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
+    final p = Paint()..color = color..strokeWidth = 3
+        ..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
     final x = left ? 0.0 : size.width;
     final y = top  ? 0.0 : size.height;
     canvas.drawLine(Offset(x, y), Offset(left ? size.width : 0, y), p);
@@ -854,16 +773,12 @@ class _CornerPainter extends CustomPainter {
   bool shouldRepaint(_CornerPainter o) => false;
 }
 
-// ─── Small widgets ────────────────────────────────────────────────────────────
 class _DetectionCard extends StatelessWidget {
   final DetectionResult detection;
   final Color color;
   final String sublabel;
-
   const _DetectionCard(
-      {required this.detection,
-      required this.color,
-      required this.sublabel});
+      {required this.detection, required this.color, required this.sublabel});
 
   @override
   Widget build(BuildContext context) {
@@ -876,44 +791,30 @@ class _DetectionCard extends StatelessWidget {
         color: color.withOpacity(0.06),
       ),
       child: Row(children: [
-        Container(
-            width: 10, height: 10,
-            decoration:
-                BoxDecoration(color: color, shape: BoxShape.circle)),
+        Container(width: 10, height: 10,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(detection.displayName,
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w600)),
-                Text(sublabel,
-                    style: TextStyle(fontSize: 12, color: color)),
-                Text(
-                  '${(detection.confidence * 100).toStringAsFixed(0)}% confidence · ${detection.cocoClass}',
-                  style: const TextStyle(
-                      fontSize: 10, color: Color(0xFF94A3B8)),
-                ),
-              ]),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(detection.displayName,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            Text(sublabel, style: TextStyle(fontSize: 12, color: color)),
+            Text(
+              '${(detection.confidence * 100).toStringAsFixed(0)}% confidence · ${detection.cocoClass}',
+              style: const TextStyle(fontSize: 10, color: Color(0xFF94A3B8)),
+            ),
+          ]),
         ),
         Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
             color: color.withOpacity(0.15),
             borderRadius: BorderRadius.circular(20),
           ),
           child: Text(
-            detection.type == DetectionType.normal
-                ? 'Normal'
-                : detection.type == DetectionType.unusual
-                    ? 'Unusual'
-                    : 'Unknown',
-            style: TextStyle(
-                fontSize: 11,
-                color: color,
-                fontWeight: FontWeight.w600),
+            detection.type == DetectionType.normal ? 'Normal'
+                : detection.type == DetectionType.unusual ? 'Unusual' : 'Unknown',
+            style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600),
           ),
         ),
       ]),
@@ -929,19 +830,11 @@ class _LegendItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      Container(
-          width: 12, height: 12,
-          decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                    color: color.withOpacity(0.4), blurRadius: 4)
-              ])),
+      Container(width: 12, height: 12,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle,
+              boxShadow: [BoxShadow(color: color.withOpacity(0.4), blurRadius: 4)])),
       const SizedBox(width: 6),
-      Text(label,
-          style: const TextStyle(
-              fontSize: 12, color: Color(0xFF64748B))),
+      Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
     ]);
   }
 }
@@ -951,12 +844,8 @@ class _StatMini extends StatelessWidget {
   final Color color;
   final int count;
   final String label;
-
-  const _StatMini(
-      {required this.icon,
-      required this.color,
-      required this.count,
-      required this.label});
+  const _StatMini({required this.icon, required this.color,
+      required this.count, required this.label});
 
   @override
   Widget build(BuildContext context) {
@@ -965,12 +854,8 @@ class _StatMini extends StatelessWidget {
       child: Column(children: [
         Icon(icon, color: color, size: 22),
         const SizedBox(height: 6),
-        Text('$count',
-            style: const TextStyle(
-                fontSize: 22, fontWeight: FontWeight.bold)),
-        Text(label,
-            style: const TextStyle(
-                fontSize: 11, color: Color(0xFF94A3B8))),
+        Text('$count', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
       ]),
     );
   }

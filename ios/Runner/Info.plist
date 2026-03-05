@@ -68,3 +68,5 @@
 	</array>
 </dict>
 </plist>
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Used to find and connect nearby devices</string>

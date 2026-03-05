@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../widgets/common_widgets.dart';
+import '../../screens/dashboard/notifications_screen.dart';
+import '../../services/notification_service.dart';
 
 class NavItem {
   final IconData icon;
@@ -19,19 +21,18 @@ class NavItem {
 }
 
 const navItems = [
-  NavItem(icon: Icons.dashboard_outlined, label: 'Overview', path: '/dashboard'),
-  NavItem(icon: Icons.inventory_2_outlined, label: 'Registered Objects', path: '/dashboard/objects'),
-  NavItem(icon: Icons.add_circle_outline, label: 'Add Object', path: '/dashboard/add-object'),
-  NavItem(icon: Icons.camera_alt_outlined, label: 'Live Camera', path: '/dashboard/camera'),
-  NavItem(icon: Icons.notifications_outlined, label: 'Alerts & History', path: '/dashboard/alerts'),
-  NavItem(icon: Icons.smartphone_outlined, label: 'Phone Recovery', path: '/dashboard/phone-recovery'),
-  NavItem(icon: Icons.bluetooth_outlined, label: 'Device Connections', path: '/dashboard/bluetooth'),
-  NavItem(icon: Icons.settings_outlined, label: 'Settings', path: '/dashboard/settings'),
+  NavItem(icon: Icons.dashboard_outlined,    label: 'Overview',            path: '/dashboard'),
+  NavItem(icon: Icons.inventory_2_outlined,  label: 'Registered Objects',  path: '/dashboard/objects'),
+  NavItem(icon: Icons.add_circle_outline,    label: 'Add Object',          path: '/dashboard/add-object'),
+  NavItem(icon: Icons.camera_alt_outlined,   label: 'Live Camera',         path: '/dashboard/camera'),
+  NavItem(icon: Icons.notifications_outlined,label: 'Alerts & History',    path: '/dashboard/alerts'),
+  NavItem(icon: Icons.smartphone_outlined,   label: 'Phone Recovery',      path: '/dashboard/phone-recovery'),
+  NavItem(icon: Icons.bluetooth_outlined,    label: 'Device Connections',  path: '/dashboard/bluetooth'),
+  NavItem(icon: Icons.settings_outlined,     label: 'Settings',            path: '/dashboard/settings'),
 ];
 
 class MainDashboard extends StatefulWidget {
   final Widget child;
-
   const MainDashboard({super.key, required this.child});
 
   @override
@@ -39,9 +40,8 @@ class MainDashboard extends StatefulWidget {
 }
 
 class _MainDashboardState extends State<MainDashboard> {
-  String _getCurrentPath(BuildContext context) {
-    return GoRouterState.of(context).matchedLocation;
-  }
+  String _getCurrentPath(BuildContext context) =>
+      GoRouterState.of(context).matchedLocation;
 
   int _getCurrentIndex(String path) {
     for (int i = 0; i < navItems.length; i++) {
@@ -56,15 +56,14 @@ class _MainDashboardState extends State<MainDashboard> {
     final currentPath = _getCurrentPath(context);
     final currentIndex = _getCurrentIndex(currentPath);
 
-    if (isWide) {
-      return _buildWideLayout(context, currentPath, currentIndex);
-    }
-    return _buildNarrowLayout(context, currentPath, currentIndex);
+    return isWide
+        ? _buildWideLayout(context, currentPath, currentIndex)
+        : _buildNarrowLayout(context, currentPath, currentIndex);
   }
 
-  Widget _buildWideLayout(
-      BuildContext context, String currentPath, int currentIndex) {
-    return Scaffold(                          // ← FIX: provides Material ancestor for all screens
+  // ── Wide (desktop/tablet) layout ───────────────────────────────────────────
+  Widget _buildWideLayout(BuildContext context, String currentPath, int currentIndex) {
+    return Scaffold(
       backgroundColor: Colors.transparent,
       body: PulseBackground(
         child: Row(
@@ -74,9 +73,7 @@ class _MainDashboardState extends State<MainDashboard> {
               child: Column(
                 children: [
                   _buildTopBar(context),
-                  Expanded(
-                    child: widget.child,
-                  ),
+                  Expanded(child: widget.child),
                 ],
               ),
             ),
@@ -86,8 +83,8 @@ class _MainDashboardState extends State<MainDashboard> {
     );
   }
 
-  Widget _buildNarrowLayout(
-      BuildContext context, String currentPath, int currentIndex) {
+  // ── Narrow (mobile) layout ─────────────────────────────────────────────────
+  Widget _buildNarrowLayout(BuildContext context, String currentPath, int currentIndex) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return PulseBackground(
@@ -108,6 +105,9 @@ class _MainDashboardState extends State<MainDashboard> {
           ),
           title: const PulseLogo(size: 32),
           actions: [
+            // ── Notification bell ──
+            _NotificationBellButton(),
+            const SizedBox(width: 4),
             _ThemeToggleButton(),
             const SizedBox(width: 8),
           ],
@@ -117,9 +117,10 @@ class _MainDashboardState extends State<MainDashboard> {
     );
   }
 
+  // ── Sidebar ────────────────────────────────────────────────────────────────
   Widget _buildSidebar(BuildContext context, String currentPath,
       {bool isDrawer = false}) {
-    final auth = context.read<AuthProvider>();
+    final auth  = context.read<AuthProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final sidebarBg = isDark
@@ -203,9 +204,7 @@ class _MainDashboardState extends State<MainDashboard> {
                   child: Text(
                     auth.user?.email ?? '',
                     style: const TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF94A3B8),
-                    ),
+                        fontSize: 12, color: Color(0xFF94A3B8)),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -217,8 +216,9 @@ class _MainDashboardState extends State<MainDashboard> {
     );
   }
 
+  // ── Top bar (wide layout) ──────────────────────────────────────────────────
   Widget _buildTopBar(BuildContext context) {
-    final auth = context.read<AuthProvider>();
+    final auth   = context.read<AuthProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
@@ -239,6 +239,9 @@ class _MainDashboardState extends State<MainDashboard> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          // ── Notification bell ──
+          _NotificationBellButton(),
+          const SizedBox(width: 8),
           _ThemeToggleButton(),
           const SizedBox(width: 12),
           Container(
@@ -252,9 +255,7 @@ class _MainDashboardState extends State<MainDashboard> {
             child: Text(
               auth.user?.email ?? '',
               style: const TextStyle(
-                fontSize: 13,
-                color: Color(0xFF94A3B8),
-              ),
+                  fontSize: 13, color: Color(0xFF94A3B8)),
             ),
           ),
         ],
@@ -263,6 +264,58 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 }
 
+// ─── Notification bell with red badge ─────────────────────────────────────────
+class _NotificationBellButton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: NotificationService.instance.badgeCount,
+      builder: (context, count, _) {
+        return IconButton(
+          tooltip: 'Notifications',
+          onPressed: () {
+            NotificationService.instance.clearBadge();
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                  builder: (_) => const NotificationsScreen()),
+            );
+          },
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(Icons.notifications_outlined, size: 26),
+              if (count > 0)
+                Positioned(
+                  top: -5,
+                  right: -5,
+                  child: Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFEF4444),
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                        minWidth: 17, minHeight: 17),
+                    child: Text(
+                      count > 99 ? '99+' : '$count',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ─── Nav item tile ────────────────────────────────────────────────────────────
 class _NavItemTile extends StatelessWidget {
   final NavItem item;
   final bool isActive;
@@ -285,26 +338,21 @@ class _NavItemTile extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: isActive
               ? const LinearGradient(
-                  colors: [Color(0xFF3B82F6), Color(0xFF2563EB)],
-                )
+                  colors: [Color(0xFF3B82F6), Color(0xFF2563EB)])
               : null,
           borderRadius: BorderRadius.circular(14),
         ),
         child: Row(
           children: [
-            Icon(
-              item.icon,
-              size: 20,
-              color: isActive ? Colors.white : const Color(0xFF94A3B8),
-            ),
+            Icon(item.icon, size: 20,
+                color: isActive ? Colors.white : const Color(0xFF94A3B8)),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
                 item.label,
                 style: TextStyle(
                   fontSize: 14,
-                  fontWeight:
-                      isActive ? FontWeight.w600 : FontWeight.w400,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
                   color: isActive ? Colors.white : const Color(0xFF64748B),
                 ),
               ),
@@ -316,14 +364,14 @@ class _NavItemTile extends StatelessWidget {
   }
 }
 
+// ─── Theme toggle ─────────────────────────────────────────────────────────────
 class _ThemeToggleButton extends StatelessWidget {
   final bool showLabel;
-
   const _ThemeToggleButton({this.showLabel = false});
 
   @override
   Widget build(BuildContext context) {
-    final theme = context.watch<ThemeProvider>();
+    final theme  = context.watch<ThemeProvider>();
     final isDark = theme.isDark;
 
     if (showLabel) {
@@ -331,14 +379,12 @@ class _ThemeToggleButton extends StatelessWidget {
         width: double.infinity,
         child: TextButton.icon(
           onPressed: theme.toggleTheme,
-          icon: Icon(
-            isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-            size: 20,
-          ),
+          icon: Icon(isDark
+              ? Icons.light_mode_outlined
+              : Icons.dark_mode_outlined, size: 20),
           label: Text(isDark ? 'Light Mode' : 'Dark Mode'),
           style: TextButton.styleFrom(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
             alignment: Alignment.centerLeft,
           ),
         ),
@@ -347,9 +393,9 @@ class _ThemeToggleButton extends StatelessWidget {
 
     return IconButton(
       onPressed: theme.toggleTheme,
-      icon: Icon(
-        isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-      ),
+      icon: Icon(isDark
+          ? Icons.light_mode_outlined
+          : Icons.dark_mode_outlined),
       tooltip: isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode',
     );
   }

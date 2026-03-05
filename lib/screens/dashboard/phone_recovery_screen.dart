@@ -3,8 +3,11 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../widgets/common_widgets.dart';
+import '../../utils/app_theme.dart';
 
 class PhoneRecoveryScreen extends StatefulWidget {
   const PhoneRecoveryScreen({super.key});
@@ -24,6 +27,7 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
 
   StreamSubscription<Position>? _positionSub;
   Timer? _btTimer;
+  final MapController _mapController = MapController();
 
   @override
   void initState() {
@@ -39,17 +43,11 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
   }
 
   Future<void> _fetchLocation() async {
-    setState(() {
-      _locationLoading = true;
-      _locationError = '';
-    });
+    setState(() { _locationLoading = true; _locationError = ''; });
 
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      setState(() {
-        _locationError = 'Location services are disabled.';
-        _locationLoading = false;
-      });
+      setState(() { _locationError = 'Location services are disabled.'; _locationLoading = false; });
       return;
     }
 
@@ -57,20 +55,12 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
-        setState(() {
-          _locationError = 'Location permission denied.';
-          _locationLoading = false;
-        });
+        setState(() { _locationError = 'Location permission denied.'; _locationLoading = false; });
         return;
       }
     }
-
     if (permission == LocationPermission.deniedForever) {
-      setState(() {
-        _locationError =
-            'Location permission permanently denied. Enable in settings.';
-        _locationLoading = false;
-      });
+      setState(() { _locationError = 'Location permission permanently denied.'; _locationLoading = false; });
       return;
     }
 
@@ -79,45 +69,34 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 10),
       );
-      setState(() {
-        _position = pos;
-        _lastSeen = DateTime.now();
-        _locationLoading = false;
-      });
+      setState(() { _position = pos; _lastSeen = DateTime.now(); _locationLoading = false; });
+      _animateMap(pos);
     } catch (e) {
-      setState(() {
-        _locationError = 'Unable to retrieve location.';
-        _locationLoading = false;
-      });
+      setState(() { _locationError = 'Unable to retrieve location.'; _locationLoading = false; });
     }
+  }
+
+  void _animateMap(Position pos) {
+    try {
+      _mapController.move(LatLng(pos.latitude, pos.longitude), 15.0);
+    } catch (_) {}
   }
 
   void _toggleTracking() {
     if (_tracking) {
       _positionSub?.cancel();
       _btTimer?.cancel();
-      setState(() {
-        _tracking = false;
-        _bluetoothSignal = 0;
-      });
+      setState(() { _tracking = false; _bluetoothSignal = 0; });
     } else {
       setState(() => _tracking = true);
       _positionSub = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
       ).listen((pos) {
-        setState(() {
-          _position = pos;
-          _lastSeen = DateTime.now();
-        });
+        setState(() { _position = pos; _lastSeen = DateTime.now(); });
+        _animateMap(pos);
       });
-
-      // Simulate bluetooth signal
       _btTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-        setState(() {
-          _bluetoothSignal = (Random().nextDouble() * 60) + 40;
-        });
+        setState(() => _bluetoothSignal = (Random().nextDouble() * 60) + 40);
       });
     }
   }
@@ -133,9 +112,8 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
 
   void _openMaps() {
     if (_position == null) return;
-    final lat = _position!.latitude;
-    final lng = _position!.longitude;
-    launchUrl(Uri.parse('https://www.google.com/maps?q=$lat,$lng'));
+    launchUrl(Uri.parse(
+        'https://www.google.com/maps?q=${_position!.latitude},${_position!.longitude}'));
   }
 
   String _signalStrength() {
@@ -146,10 +124,10 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
   }
 
   Color _signalColor() {
-    if (_bluetoothSignal <= 0) return const Color(0xFF94A3B8);
-    if (_bluetoothSignal < 50) return const Color(0xFFEF4444);
-    if (_bluetoothSignal < 75) return const Color(0xFFF59E0B);
-    return const Color(0xFF22C55E);
+    if (_bluetoothSignal <= 0) return AppColors.lightTextMute;
+    if (_bluetoothSignal < 50) return AppColors.error;
+    if (_bluetoothSignal < 75) return AppColors.warning;
+    return AppColors.success;
   }
 
   String _timeSinceSeen() {
@@ -161,212 +139,237 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final hasLocation = _position != null;
+    final center = hasLocation
+        ? LatLng(_position!.latitude, _position!.longitude)
+        : const LatLng(0, 0);
+
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(AppSpacing.xl),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Phone Recovery',
-              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-          const Text('Locate and recover your device',
-              style: TextStyle(color: Color(0xFF64748B), fontSize: 15)),
-          const SizedBox(height: 24),
+          Text('Phone Recovery',
+              style: AppTextStyles.display.copyWith(color: context.textPrimary)),
+          const SizedBox(height: AppSpacing.xs),
+          Text('Locate and recover your device',
+              style: AppTextStyles.body.copyWith(color: context.textMuted)),
+          const SizedBox(height: AppSpacing.xl2),
 
-          // Location card
+          // ── MAP CARD ──────────────────────────────────────────────────
           GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.location_on, color: Color(0xFF3B82F6)),
-                    const SizedBox(width: 8),
-                    const Text('Current Location',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w600)),
-                    const Spacer(),
+            padding: EdgeInsets.zero,
+            child: Column(children: [
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(AppRadius.lg)),
+                child: SizedBox(
+                  height: 220,
+                  child: hasLocation
+                      ? FlutterMap(
+                          mapController: _mapController,
+                          options: MapOptions(
+                            initialCenter: center,
+                            initialZoom: 15,
+                            interactionOptions: const InteractionOptions(
+                              flags: InteractiveFlag.pinchZoom |
+                                  InteractiveFlag.drag,
+                            ),
+                          ),
+                          children: [
+                            TileLayer(
+                              urlTemplate:
+                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              userAgentPackageName: 'com.pulse.app',
+                            ),
+                            MarkerLayer(markers: [
+                              Marker(
+                                point: center,
+                                width: 48, height: 48,
+                                child: _PulsingMarker(tracking: _tracking),
+                              ),
+                            ]),
+                            CircleLayer(circles: [
+                              CircleMarker(
+                                point: center,
+                                radius: _position!.accuracy,
+                                useRadiusInMeter: true,
+                                color: context.primary.withOpacity(0.12),
+                                borderColor: context.primary.withOpacity(0.4),
+                                borderStrokeWidth: 1.5,
+                              ),
+                            ]),
+                          ],
+                        )
+                      : Container(
+                          color: AppColors.darkSurface,
+                          child: Center(
+                            child: _locationLoading
+                                ? Column(mainAxisSize: MainAxisSize.min, children: [
+                                    CircularProgressIndicator(color: context.primary),
+                                    const SizedBox(height: AppSpacing.md),
+                                    const Text('Getting location…',
+                                        style: TextStyle(color: Colors.white54)),
+                                  ])
+                                : Column(mainAxisSize: MainAxisSize.min, children: [
+                                    const Icon(Icons.location_off,
+                                        color: Colors.white38, size: 40),
+                                    const SizedBox(height: AppSpacing.sm),
+                                    Text(
+                                      _locationError.isNotEmpty
+                                          ? _locationError
+                                          : 'Location unavailable',
+                                      style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                    OutlinedButton.icon(
+                                      onPressed: _fetchLocation,
+                                      icon: const Icon(Icons.refresh, color: Colors.white70, size: 16),
+                                      label: const Text('Retry',
+                                          style: TextStyle(color: Colors.white70)),
+                                      style: OutlinedButton.styleFrom(
+                                        side: const BorderSide(color: Colors.white24),
+                                        shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(AppRadius.sm)),
+                                      ),
+                                    ),
+                                  ]),
+                          ),
+                        ),
+                ),
+              ),
+
+              if (hasLocation)
+                Padding(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  child: Row(children: [
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(
+                          '${_position!.latitude.toStringAsFixed(5)}, '
+                          '${_position!.longitude.toStringAsFixed(5)}',
+                          style: AppTextStyles.h4.copyWith(color: context.textPrimary),
+                        ),
+                        Text('±${_position!.accuracy.toStringAsFixed(0)} m accuracy',
+                            style: AppTextStyles.caption.copyWith(color: context.textMuted)),
+                      ]),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _openMaps,
+                      icon: const Icon(Icons.open_in_new, size: 15),
+                      label: const Text('Maps'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: context.primary,
+                        side: BorderSide(color: context.primary),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.md, vertical: AppSpacing.sm + 2),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(AppRadius.sm)),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.xs),
                     IconButton(
                       onPressed: _fetchLocation,
                       icon: _locationLoading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                          ? SizedBox(
+                              width: 18, height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: context.primary),
                             )
-                          : const Icon(Icons.refresh),
+                          : Icon(Icons.my_location, color: context.primary),
+                      tooltip: 'Refresh location',
                     ),
-                  ],
+                  ]),
                 ),
-                const SizedBox(height: 12),
-
-                if (_locationError.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.red.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.error_outline,
-                            color: Colors.red, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(_locationError,
-                              style: const TextStyle(color: Colors.red)),
-                        ),
-                      ],
-                    ),
-                  )
-                else if (_position != null) ...[
-                  _CoordRow(
-                    label: 'Latitude',
-                    value:
-                        _position!.latitude.toStringAsFixed(6),
-                  ),
-                  const SizedBox(height: 8),
-                  _CoordRow(
-                    label: 'Longitude',
-                    value:
-                        _position!.longitude.toStringAsFixed(6),
-                  ),
-                  const SizedBox(height: 8),
-                  _CoordRow(
-                    label: 'Accuracy',
-                    value:
-                        '±${_position!.accuracy.toStringAsFixed(0)}m',
-                  ),
-                  const SizedBox(height: 16),
-                  GradientButton(
-                    label: 'Open in Maps',
-                    icon: Icons.navigation_outlined,
-                    onPressed: _openMaps,
-                    height: 46,
-                  ),
-                ] else
-                  const Text('Fetching location...',
-                      style: TextStyle(color: Color(0xFF94A3B8))),
-              ],
-            ),
+            ]),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
-          // Last seen & tracking
+          // ── LAST SEEN + TRACKING ────────────────────────────────────
           GlassCard(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Last Seen',
-                          style: TextStyle(
-                              fontSize: 13,
-                              color: Color(0xFF94A3B8))),
-                      Text(
-                        _timeSinceSeen(),
-                        style: const TextStyle(
-                            fontSize: 22, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                ),
-                GradientButton(
-                  label: _tracking ? 'Stop' : 'Track Live',
-                  icon: _tracking ? Icons.stop : Icons.radio_button_checked,
-                  onPressed: _toggleTracking,
-                  gradient: _tracking
-                      ? [const Color(0xFFEF4444), const Color(0xFFDC2626)]
-                      : null,
-                  height: 44,
-                ),
-              ],
-            ),
+            child: Row(children: [
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Last Seen',
+                      style: AppTextStyles.bodySm.copyWith(color: context.textMuted)),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(_timeSinceSeen(),
+                      style: AppTextStyles.h1.copyWith(color: context.textPrimary)),
+                ]),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              GradientButton(           // ✅ fullWidth: false — inside Row
+                label: _tracking ? 'Stop' : 'Track Live',
+                icon: _tracking ? Icons.stop : Icons.radio_button_checked,
+                onPressed: _toggleTracking,
+                gradient: _tracking
+                    ? [AppColors.error, const Color(0xFFDC2626)]
+                    : null,
+                height: 44,
+                fullWidth: false,
+              ),
+            ]),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
-          // Bluetooth signal
+          // ── BLUETOOTH SIGNAL ────────────────────────────────────────
           GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.bluetooth, color: Color(0xFF3B82F6)),
-                    const SizedBox(width: 8),
-                    const Text('Bluetooth Signal',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w600)),
-                    const Spacer(),
-                    Text(
-                      _signalStrength(),
-                      style: TextStyle(
-                          color: _signalColor(),
-                          fontWeight: FontWeight.w600),
-                    ),
-                  ],
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(Icons.bluetooth, color: context.primary),
+                const SizedBox(width: AppSpacing.sm),
+                Text('Bluetooth Signal',
+                    style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+                const Spacer(),
+                Text(_signalStrength(),
+                    style: AppTextStyles.h4.copyWith(color: _signalColor())),
+              ]),
+              const SizedBox(height: AppSpacing.md),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(AppRadius.xs),
+                child: LinearProgressIndicator(
+                  value: _bluetoothSignal / 100,
+                  minHeight: 8,
+                  backgroundColor: context.border,
+                  valueColor: AlwaysStoppedAnimation(_signalColor()),
                 ),
-                const SizedBox(height: 12),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: _bluetoothSignal / 100,
-                    minHeight: 8,
-                    backgroundColor: const Color(0xFFE2E8F0),
-                    valueColor:
-                        AlwaysStoppedAnimation(_signalColor()),
-                  ),
-                ),
-                if (!_tracking)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 10),
-                    child: Text(
-                      'Start live tracking to see signal',
-                      style: TextStyle(
-                          color: Color(0xFF94A3B8), fontSize: 13),
-                    ),
-                  ),
+              ),
+              if (!_tracking) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Text('Start live tracking to see signal',
+                    style: AppTextStyles.bodySm.copyWith(color: context.textMuted)),
               ],
-            ),
+            ]),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
-          // Sound alert
+          // ── SOUND ALERT ─────────────────────────────────────────────
           GlassCard(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Sound Alert',
-                          style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600)),
-                      const Text(
-                          'Play a sound to help find your phone',
-                          style: TextStyle(
-                              color: Color(0xFF94A3B8),
-                              fontSize: 13)),
-                    ],
-                  ),
-                ),
-                GradientButton(
-                  label: _isPlaying ? 'Playing...' : 'Play Sound',
-                  icon: _isPlaying
-                      ? Icons.volume_up
-                      : Icons.volume_up_outlined,
-                  onPressed: _playSound,
-                  gradient: _isPlaying
-                      ? [const Color(0xFF22C55E), const Color(0xFF16A34A)]
-                      : null,
-                  height: 44,
-                ),
-              ],
-            ),
+            child: Row(children: [
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Sound Alert',
+                      style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text('Play a sound to help find your phone',
+                      style: AppTextStyles.bodySm.copyWith(color: context.textMuted)),
+                ]),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              GradientButton(           // ✅ fullWidth: false — inside Row
+                label: _isPlaying ? 'Playing...' : 'Play Sound',
+                icon: _isPlaying ? Icons.volume_up : Icons.volume_up_outlined,
+                onPressed: _playSound,
+                gradient: _isPlaying
+                    ? [AppColors.success, const Color(0xFF16A34A)]
+                    : null,
+                height: 44,
+                fullWidth: false,
+              ),
+            ]),
           ),
         ],
       ),
@@ -374,29 +377,50 @@ class _PhoneRecoveryScreenState extends State<PhoneRecoveryScreen> {
   }
 }
 
-class _CoordRow extends StatelessWidget {
-  final String label;
-  final String value;
+class _PulsingMarker extends StatefulWidget {
+  final bool tracking;
+  const _PulsingMarker({required this.tracking});
+  @override
+  State<_PulsingMarker> createState() => _PulsingMarkerState();
+}
 
-  const _CoordRow({required this.label, required this.value});
+class _PulsingMarkerState extends State<_PulsingMarker>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _anim;
+  late Animation<double> _scale, _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(vsync: this, duration: const Duration(seconds: 1))
+      ..repeat(reverse: true);
+    _scale   = Tween(begin: 0.85, end: 1.15)
+        .animate(CurvedAnimation(parent: _anim, curve: Curves.easeInOut));
+    _opacity = Tween(begin: 0.4, end: 1.0)
+        .animate(CurvedAnimation(parent: _anim, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() { _anim.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 80,
-          child: Text(
-            label,
-            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+    final color = widget.tracking ? AppColors.success : context.primary;
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (_, __) => Transform.scale(
+        scale: widget.tracking ? _scale.value : 1.0,
+        child: Opacity(
+          opacity: widget.tracking ? _opacity.value : 1.0,
+          child: Container(
+            decoration: BoxDecoration(
+              color: color, shape: BoxShape.circle,
+              boxShadow: [BoxShadow(color: color.withOpacity(0.5), blurRadius: 10, spreadRadius: 2)],
+            ),
+            child: const Icon(Icons.smartphone, color: Colors.white, size: 22),
           ),
         ),
-        Text(
-          value,
-          style:
-              const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-        ),
-      ],
+      ),
     );
   }
 }

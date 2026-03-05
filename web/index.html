@@ -1,19 +1,6 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
@@ -31,16 +18,91 @@
 
   <title>pulse_flutter</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- TensorFlow.js + COCO-SSD (must load before flutter_bootstrap.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+  <style>
+    /* Hidden video element — only used by COCO-SSD for frame analysis */
+    #cocoVideoSource {
+      position: fixed;
+      top: -9999px;
+      left: -9999px;
+      width: 320px;
+      height: 240px;
+      opacity: 0;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+  <!-- Hidden video that COCO-SSD runs inference on -->
+  <video id="cocoVideoSource" autoplay playsinline muted></video>
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
+  <script>
+    let _cocoModel = null;
+    let _videoStream = null;
+    const _videoEl = document.getElementById('cocoVideoSource');
+
+    // 1. Load model — Dart polls window._dartCocoReady to know when done
+    window.cocoSsdReady = cocoSsd.load({ base: 'mobilenet_v2' }).then(model => {
+      _cocoModel = model;
+      console.log('[COCO-SSD] Model loaded ✓');
+    }).catch(err => {
+      console.error('[COCO-SSD] Failed to load model:', err);
+    });
+
+    // 2. Start webcam into hidden <video>
+    window.startWebcam = async function () {
+      if (_videoStream) return;
+      try {
+        _videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: 640, height: 480 },
+          audio: false,
+        });
+        _videoEl.srcObject = _videoStream;
+        await _videoEl.play();
+        console.log('[Webcam] Stream started ✓');
+      } catch (err) {
+        console.error('[Webcam] Error:', err);
+        throw err;
+      }
+    };
+
+    // 3. Stop webcam
+    window.stopWebcam = function () {
+      if (_videoStream) {
+        _videoStream.getTracks().forEach(t => t.stop());
+        _videoStream = null;
+        _videoEl.srcObject = null;
+      }
+    };
+
+    // 4. Run one detection pass — called by Dart via JS interop
+    window.runCocoSsd = function () {
+      return new Promise(async (resolve, reject) => {
+        if (!_cocoModel) { reject('Model not loaded yet'); return; }
+        if (!_videoEl.srcObject || _videoEl.readyState < 2) { resolve([]); return; }
+        try {
+          const predictions = await _cocoModel.detect(_videoEl);
+          const vw = _videoEl.videoWidth  || 640;
+          const vh = _videoEl.videoHeight || 480;
+          resolve(predictions.map(p => ({
+            class:       p.class,
+            score:       p.score,
+            bbox:        p.bbox,  // [x, y, width, height] in pixels
+            videoWidth:  vw,
+            videoHeight: vh,
+          })));
+        } catch (err) {
+          reject(err.toString());
+        }
+      });
+    };
+  </script>
+
+  <!-- Flutter bootstrap — keep LAST -->
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

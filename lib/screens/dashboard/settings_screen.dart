@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../providers/auth_provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/supabase_service.dart';
 import '../../widgets/common_widgets.dart';
+import '../../utils/app_theme.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -22,9 +24,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     'alert_sensitivity': 'medium',
   };
   bool _loading = true;
-  bool _saving = false;
-  String _message = '';
-  bool _messageIsError = false;
+  bool _saving  = false;
 
   @override
   void initState() {
@@ -39,9 +39,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (data != null) {
       setState(() {
         _prefs = {
-          'voice_assistant_enabled': data['voice_assistant_enabled'] ?? true,
-          'camera_detection_enabled': data['camera_detection_enabled'] ?? false,
-          'notification_sound_enabled': data['notification_sound_enabled'] ?? true,
+          'voice_assistant_enabled':
+              data['voice_assistant_enabled'] ?? true,
+          'camera_detection_enabled':
+              data['camera_detection_enabled'] ?? false,
+          'notification_sound_enabled':
+              data['notification_sound_enabled'] ?? true,
           'alert_sensitivity': data['alert_sensitivity'] ?? 'medium',
         };
       });
@@ -55,153 +58,479 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _saving = true);
     try {
       await SupabaseService.updateUserPreferences(user.id, _prefs);
-      _showMessage('Settings saved successfully!', false);
+      if (mounted) PulseSnackBar.show(context, 'Settings saved!', isSuccess: true);
     } catch (e) {
-      _showMessage('Failed to save settings.', true);
+      if (mounted) PulseSnackBar.show(context, 'Failed to save settings.', isError: true);
     }
     setState(() => _saving = false);
   }
 
-  void _showMessage(String msg, bool isError) {
-    setState(() {
-      _message = msg;
-      _messageIsError = isError;
-    });
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _message = '');
-    });
+  // ── Biometric setup ───────────────────────────────────────────────────────
+  Future<void> _handleBiometricSetup() async {
+    final auth = context.read<AuthProvider>();
+
+    if (auth.biometricEnabled) {
+      // Already enabled → offer to disable
+      final confirm = await _showConfirmDialog(
+        title: 'Disable Biometrics',
+        body: 'Are you sure you want to disable biometric login?',
+        confirmLabel: 'Disable',
+        destructive: true,
+      );
+      if (confirm == true) {
+        final err = await auth.disableBiometric();
+        if (mounted) {
+          if (err == null) {
+            PulseSnackBar.show(context, 'Biometric login disabled.', isSuccess: true);
+          } else {
+            PulseSnackBar.show(context, err, isError: true);
+          }
+        }
+      }
+      return;
+    }
+
+    if (!auth.biometricAvailable) {
+      _showInfoDialog(
+        icon: Icons.fingerprint,
+        title: 'Not Available',
+        body: 'Biometric authentication is not supported on this device or browser.\n\n'
+            'To use biometrics, run the app on an Android or iOS device with fingerprint or Face ID enrolled.',
+      );
+      return;
+    }
+
+    // Show setup instructions, then trigger
+    final proceed = await _showConfirmDialog(
+      title: 'Setup Biometrics',
+      body: 'You will be prompted to confirm your fingerprint or Face ID.\n\n'
+          'After setup, you can use biometrics to sign in quickly.',
+      confirmLabel: 'Continue',
+    );
+    if (proceed != true) return;
+
+    final err = await auth.setupBiometric();
+    if (mounted) {
+      if (err == null) {
+        PulseSnackBar.show(context,
+            'Biometric login enabled! You can now sign in with your fingerprint.',
+            isSuccess: true);
+        setState(() {});
+      } else {
+        PulseSnackBar.show(context, err, isError: true);
+      }
+    }
   }
+
+  // ── Voice setup ───────────────────────────────────────────────────────────
+  Future<void> _handleVoiceSetup() async {
+    final auth = context.read<AuthProvider>();
+
+    if (auth.voiceEnabled) {
+      final confirm = await _showConfirmDialog(
+        title: 'Disable Voice Login',
+        body: 'Are you sure you want to remove your voice passphrase?',
+        confirmLabel: 'Disable',
+        destructive: true,
+      );
+      if (confirm == true) {
+        await auth.disableVoice();
+        if (mounted) {
+          PulseSnackBar.show(context, 'Voice login disabled.', isSuccess: true);
+          setState(() {});
+        }
+      }
+      return;
+    }
+
+    // Start voice setup wizard
+    await _showVoiceSetupSheet(auth);
+  }
+
+  Future<void> _showVoiceSetupSheet(AuthProvider auth) async {
+    final stt = SpeechToText();
+    bool available = false;
+    String status  = 'Tap the mic to record your passphrase';
+    String spoken  = '';
+    bool listening = false;
+    bool done      = false;
+
+    try {
+      available = await stt.initialize(
+        onError: (e) => status = 'Microphone error: ${e.errorMsg}',
+        onStatus: (s) {
+          if (s == 'done' || s == 'notListening') {
+            listening = false;
+          }
+        },
+      );
+    } catch (_) {
+      available = false;
+    }
+
+    if (!mounted) return;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius:
+            BorderRadius.vertical(top: Radius.circular(AppRadius.xl2)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          Future<void> startListening() async {
+            if (!available) {
+              setSheet(() =>
+                  status = 'Microphone not available. Check app permissions.');
+              return;
+            }
+            setSheet(() { listening = true; spoken = ''; status = 'Listening…'; });
+            await stt.listen(
+              onResult: (result) {
+                setSheet(() {
+                  spoken = result.recognizedWords;
+                  if (result.finalResult) {
+                    listening = false;
+                    if (spoken.trim().isNotEmpty) {
+                      status = 'Heard: "$spoken"\nTap Save to confirm.';
+                      done = true;
+                    } else {
+                      status = 'Nothing heard. Try again.';
+                    }
+                  }
+                });
+              },
+              listenFor: const Duration(seconds: 10),
+              pauseFor: const Duration(seconds: 3),
+              listenOptions: SpeechListenOptions(
+                partialResults: true,
+                cancelOnError: true,
+              ),
+            );
+          }
+
+          Future<void> stopListening() async {
+            await stt.stop();
+            setSheet(() => listening = false);
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(ctx).viewInsets.bottom,
+            ),
+            child: Container(
+              padding: const EdgeInsets.all(AppSpacing.xl2),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Handle
+                  Container(
+                    width: 40, height: 4,
+                    margin: const EdgeInsets.only(bottom: AppSpacing.xl),
+                    decoration: BoxDecoration(
+                      color: context.border,
+                      borderRadius: BorderRadius.circular(AppRadius.full),
+                    ),
+                  ),
+
+                  Text('Setup Voice Login',
+                      style: AppTextStyles.h2
+                          .copyWith(color: context.textPrimary)),
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    'Speak a unique passphrase — e.g. "Open Pulse dashboard".\n'
+                    'You will use this phrase every time you sign in with voice.',
+                    style: AppTextStyles.body
+                        .copyWith(color: context.textMuted),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: AppSpacing.xl2),
+
+                  // Mic button
+                  GestureDetector(
+                    onTap: listening ? stopListening : startListening,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: 88, height: 88,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: listening
+                            ? AppColors.error.withOpacity(0.15)
+                            : context.primary.withOpacity(0.12),
+                        border: Border.all(
+                          color: listening
+                              ? AppColors.error
+                              : context.primary,
+                          width: 2,
+                        ),
+                        boxShadow: listening
+                            ? [BoxShadow(
+                                color: AppColors.error.withOpacity(0.3),
+                                blurRadius: 20, spreadRadius: 4)]
+                            : context.glowShadow,
+                      ),
+                      child: Icon(
+                        listening ? Icons.stop : Icons.mic,
+                        size: 38,
+                        color: listening ? AppColors.error : context.primary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+
+                  // Status text
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    child: Text(
+                      status,
+                      key: ValueKey(status),
+                      style: AppTextStyles.body.copyWith(
+                        color: done
+                            ? AppColors.success
+                            : listening
+                                ? AppColors.error
+                                : context.textSecondary,
+                        fontWeight: done ? FontWeight.w600 : FontWeight.normal,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.xl2),
+
+                  // Save / Cancel
+                  Row(children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: AppSpacing.md + 2),
+                          shape: RoundedRectangleBorder(
+                              borderRadius:
+                                  BorderRadius.circular(AppRadius.md)),
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: GradientButton(
+                        label: 'Save Passphrase',
+                        icon: Icons.check,
+                        onPressed: done && spoken.trim().isNotEmpty
+                            ? () async {
+                                final err = await auth.setupVoice(spoken);
+                                Navigator.pop(ctx);
+                                if (mounted) {
+                                  if (err == null) {
+                                    PulseSnackBar.show(context,
+                                        'Voice login enabled!',
+                                        isSuccess: true);
+                                    setState(() {});
+                                  } else {
+                                    PulseSnackBar.show(context, err,
+                                        isError: true);
+                                  }
+                                }
+                              }
+                            : null,
+                        height: 48,
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: AppSpacing.lg),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ── Dialogs ───────────────────────────────────────────────────────────────
+  Future<bool?> _showConfirmDialog({
+    required String title,
+    required String body,
+    required String confirmLabel,
+    bool destructive = false,
+  }) =>
+      showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.xl)),
+          title: Text(title,
+              style: AppTextStyles.h2
+                  .copyWith(color: context.textPrimary)),
+          content: Text(body,
+              style: AppTextStyles.body
+                  .copyWith(color: context.textSecondary)),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                    destructive ? AppColors.error : context.primary,
+                foregroundColor: Colors.white,
+              ),
+              child: Text(confirmLabel),
+            ),
+          ],
+        ),
+      );
+
+  void _showInfoDialog({
+    required IconData icon,
+    required String title,
+    required String body,
+  }) =>
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.xl)),
+          title: Row(children: [
+            Icon(icon, color: context.primary),
+            const SizedBox(width: AppSpacing.sm),
+            Text(title,
+                style:
+                    AppTextStyles.h2.copyWith(color: context.textPrimary)),
+          ]),
+          content: Text(body,
+              style: AppTextStyles.body
+                  .copyWith(color: context.textSecondary)),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: context.primary,
+                  foregroundColor: Colors.white),
+              child: const Text('Got it'),
+            ),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
 
-    final auth = context.read<AuthProvider>();
+    final auth  = context.watch<AuthProvider>();
     final theme = context.watch<ThemeProvider>();
-    // Use theme-aware colors throughout
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-    final subtitleColor = colorScheme.onSurface.withOpacity(0.5);
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(AppSpacing.xl),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Page title ──────────────────────────────────────────────────
-          Text(
-            'Settings',
-            style: textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Manage your account and preferences',
-            style: textTheme.bodyMedium?.copyWith(color: subtitleColor),
-          ),
-          const SizedBox(height: 24),
+          Text('Settings',
+              style: AppTextStyles.display
+                  .copyWith(color: context.textPrimary)),
+          const SizedBox(height: AppSpacing.xs),
+          Text('Manage your account and preferences',
+              style: AppTextStyles.body.copyWith(color: context.textMuted)),
+          const SizedBox(height: AppSpacing.xl2),
 
-          // ── Message banner ──────────────────────────────────────────────
-          if (_message.isNotEmpty)
-            Container(
-              margin: const EdgeInsets.only(bottom: 16),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: _messageIsError
-                    ? Colors.red.withOpacity(0.1)
-                    : const Color(0xFF22C55E).withOpacity(0.1),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: _messageIsError ? Colors.red : const Color(0xFF22C55E),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    _messageIsError ? Icons.error_outline : Icons.check_circle_outline,
-                    color: _messageIsError ? Colors.red : const Color(0xFF22C55E),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _message,
-                      style: TextStyle(
-                        color: _messageIsError ? Colors.red : const Color(0xFF22C55E),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // ── Account ─────────────────────────────────────────────────────
+          // ── Account ─────────────────────────────────────────────────
           GlassCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _SectionHeader(icon: Icons.person_outline, label: 'Account'),
-                const SizedBox(height: 12),
-                _InfoRow(label: 'Email', value: auth.user?.email ?? ''),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.fingerprint, size: 18),
-                        label: const Text('Setup Biometrics'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14)),
-                        ),
-                      ),
+                _SectionTitle(
+                    icon: Icons.person_outline, label: 'Account'),
+                const SizedBox(height: AppSpacing.md),
+
+                // Email row
+                Row(children: [
+                  Icon(Icons.email_outlined,
+                      size: 16, color: context.textMuted),
+                  const SizedBox(width: AppSpacing.sm),
+                  Text('Email  ',
+                      style: AppTextStyles.bodySm
+                          .copyWith(color: context.textMuted)),
+                  Expanded(
+                    child: Text(
+                      auth.user?.email ?? '',
+                      style: AppTextStyles.body
+                          .copyWith(color: context.textPrimary,
+                              fontWeight: FontWeight.w500),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.mic_outlined, size: 18),
-                        label: const Text('Setup Voice'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14)),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
+                ]),
+                const SizedBox(height: AppSpacing.lg),
+                Divider(color: context.border),
+                const SizedBox(height: AppSpacing.lg),
+
+                // ── Biometric button ─────────────────────────────────
+                _SecurityButton(
+                  icon: Icons.fingerprint,
+                  label: auth.biometricEnabled
+                      ? 'Biometrics Enabled'
+                      : 'Setup Biometrics',
+                  subtitle: auth.biometricEnabled
+                      ? 'Tap to disable fingerprint / Face ID login'
+                      : auth.biometricAvailable
+                          ? 'Use fingerprint or Face ID to sign in'
+                          : 'Not available on this device/browser',
+                  enabled: auth.biometricEnabled,
+                  available: auth.biometricAvailable || auth.biometricEnabled,
+                  onTap: _handleBiometricSetup,
+                ),
+                const SizedBox(height: AppSpacing.md),
+
+                // ── Voice button ─────────────────────────────────────
+                _SecurityButton(
+                  icon: Icons.mic_outlined,
+                  label: auth.voiceEnabled
+                      ? 'Voice Login Enabled'
+                      : 'Setup Voice Login',
+                  subtitle: auth.voiceEnabled
+                      ? 'Tap to remove your voice passphrase'
+                      : 'Speak a passphrase to sign in hands-free',
+                  enabled: auth.voiceEnabled,
+                  available: true,
+                  onTap: _handleVoiceSetup,
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
-          // ── Appearance ──────────────────────────────────────────────────
+          // ── Appearance ───────────────────────────────────────────────
           GlassCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _SectionHeader(icon: Icons.palette_outlined, label: 'Appearance'),
-                const SizedBox(height: 12),
+                _SectionTitle(
+                    icon: Icons.palette_outlined, label: 'Appearance'),
+                const SizedBox(height: AppSpacing.md),
                 _SwitchRow(
                   label: 'Dark Mode',
                   subtitle: 'Switch between light and dark theme',
-                  icon: theme.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
+                  icon: theme.isDark
+                      ? Icons.light_mode_outlined
+                      : Icons.dark_mode_outlined,
                   value: theme.isDark,
                   onChanged: (_) => theme.toggleTheme(),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
-          // ── Preferences ─────────────────────────────────────────────────
+          // ── Preferences ──────────────────────────────────────────────
           GlassCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _SectionHeader(icon: Icons.tune_outlined, label: 'Preferences'),
-                const SizedBox(height: 12),
+                _SectionTitle(icon: Icons.tune_outlined, label: 'Preferences'),
+                const SizedBox(height: AppSpacing.md),
                 _SwitchRow(
                   label: 'Voice Assistant',
                   subtitle: 'Enable voice commands and responses',
@@ -210,7 +539,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: (v) =>
                       setState(() => _prefs['voice_assistant_enabled'] = v),
                 ),
-                const Divider(height: 24),
+                Divider(color: context.border, height: AppSpacing.xl2),
                 _SwitchRow(
                   label: 'Camera Detection',
                   subtitle: 'Enable live camera object detection',
@@ -219,56 +548,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: (v) =>
                       setState(() => _prefs['camera_detection_enabled'] = v),
                 ),
-                const Divider(height: 24),
+                Divider(color: context.border, height: AppSpacing.xl2),
                 _SwitchRow(
                   label: 'Notification Sounds',
                   subtitle: 'Play sound for alerts',
                   icon: Icons.volume_up_outlined,
                   value: _prefs['notification_sound_enabled'] as bool,
-                  onChanged: (v) =>
-                      setState(() => _prefs['notification_sound_enabled'] = v),
+                  onChanged: (v) => setState(
+                      () => _prefs['notification_sound_enabled'] = v),
                 ),
-                const Divider(height: 24),
+                Divider(color: context.border, height: AppSpacing.xl2),
 
-                // Alert sensitivity segmented control
-                Row(
-                  children: [
-                    Icon(Icons.tune, size: 18, color: subtitleColor),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Alert Sensitivity',
-                      style: textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w500),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
+                // Alert sensitivity
+                Row(children: [
+                  Icon(Icons.tune, size: 18, color: context.textMuted),
+                  const SizedBox(width: AppSpacing.sm),
+                  Text('Alert Sensitivity',
+                      style: AppTextStyles.body.copyWith(
+                          color: context.textPrimary,
+                          fontWeight: FontWeight.w500)),
+                ]),
+                const SizedBox(height: AppSpacing.md),
                 Row(
                   children: ['low', 'medium', 'high'].map((s) {
-                    final isSelected = _prefs['alert_sensitivity'] == s;
+                    final selected = _prefs['alert_sensitivity'] == s;
                     return Expanded(
                       child: GestureDetector(
-                        onTap: () =>
-                            setState(() => _prefs['alert_sensitivity'] = s),
+                        onTap: () => setState(
+                            () => _prefs['alert_sensitivity'] = s),
                         child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
+                          duration: const Duration(milliseconds: 180),
                           margin: const EdgeInsets.symmetric(horizontal: 3),
-                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                              vertical: AppSpacing.sm + 2),
                           decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFF3B82F6)
-                                : colorScheme.surfaceVariant,
-                            borderRadius: BorderRadius.circular(12),
+                            color: selected
+                                ? context.primary
+                                : context.surfaceAlt,
+                            borderRadius:
+                                BorderRadius.circular(AppRadius.md),
+                            border: Border.all(
+                              color: selected
+                                  ? context.primary
+                                  : context.border,
+                            ),
                           ),
                           child: Text(
                             s[0].toUpperCase() + s.substring(1),
                             textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
-                              color: isSelected
+                            style: AppTextStyles.label.copyWith(
+                              color: selected
                                   ? Colors.white
-                                  : colorScheme.onSurfaceVariant,
+                                  : context.textSecondary,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
@@ -279,7 +611,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
           GradientButton(
             label: 'Save Settings',
@@ -287,99 +619,133 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: _savePreferences,
             loading: _saving,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
 
-          // ── Security ────────────────────────────────────────────────────
+          // ── Security ─────────────────────────────────────────────────
           GlassCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _SectionHeader(icon: Icons.security_outlined, label: 'Security'),
-                const SizedBox(height: 12),
-                TextButton.icon(
-                  onPressed: () {},
-                  icon: Icon(Icons.lock_reset, color: colorScheme.primary),
-                  label: Text(
-                    'Change Password',
-                    style: TextStyle(color: colorScheme.primary),
-                  ),
+                _SectionTitle(
+                    icon: Icons.security_outlined, label: 'Security'),
+                const SizedBox(height: AppSpacing.md),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.lock_reset, color: context.primary),
+                  title: Text('Change Password',
+                      style: AppTextStyles.body.copyWith(
+                          color: context.primary,
+                          fontWeight: FontWeight.w500)),
+                  onTap: () {},
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadius.md)),
                 ),
-                const Divider(height: 20),
-                TextButton.icon(
-                  onPressed: () async {
+                Divider(color: context.border, height: AppSpacing.xl),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.logout, color: AppColors.error),
+                  title: Text('Sign Out',
+                      style: AppTextStyles.body.copyWith(
+                          color: AppColors.error,
+                          fontWeight: FontWeight.w500)),
+                  onTap: () async {
                     await auth.signOut();
                     if (context.mounted) context.go('/login');
                   },
-                  icon: const Icon(Icons.logout, color: Colors.red),
-                  label: const Text(
-                    'Sign Out',
-                    style: TextStyle(color: Colors.red),
-                  ),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadius.md)),
                 ),
               ],
             ),
           ),
-
-          const SizedBox(height: 24),
+          const SizedBox(height: AppSpacing.xl3),
         ],
       ),
     );
   }
 }
 
-// ── Sub-widgets ───────────────────────────────────────────────────────────────
+// ── Reusable sub-widgets ──────────────────────────────────────────────────────
 
-class _SectionHeader extends StatelessWidget {
+class _SectionTitle extends StatelessWidget {
   final IconData icon;
   final String label;
-
-  const _SectionHeader({required this.icon, required this.label});
+  const _SectionTitle({required this.icon, required this.label});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: const Color(0xFF3B82F6)),
-        const SizedBox(width: 8),
-        Text(
-          label,
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.bold),
-        ),
-      ],
-    );
+    return Row(children: [
+      Icon(icon, size: 20, color: context.primary),
+      const SizedBox(width: AppSpacing.sm),
+      Text(label,
+          style: AppTextStyles.h3.copyWith(color: context.textPrimary)),
+    ]);
   }
 }
 
-class _InfoRow extends StatelessWidget {
+class _SecurityButton extends StatelessWidget {
+  final IconData icon;
   final String label;
-  final String value;
+  final String subtitle;
+  final bool enabled;
+  final bool available;
+  final VoidCallback onTap;
 
-  const _InfoRow({required this.label, required this.value});
+  const _SecurityButton({
+    required this.icon,
+    required this.label,
+    required this.subtitle,
+    required this.enabled,
+    required this.available,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final subtitleColor =
-        Theme.of(context).colorScheme.onSurface.withOpacity(0.5);
-    return Row(
-      children: [
-        Text(
-          '$label: ',
-          style: TextStyle(color: subtitleColor),
+    final color = enabled
+        ? AppColors.success
+        : available
+            ? context.primary
+            : context.textMuted;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      child: Container(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.07),
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: color.withOpacity(0.25)),
         ),
-        Expanded(
-          child: Text(
-            value,
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(fontWeight: FontWeight.w500),
-            overflow: TextOverflow.ellipsis,
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: color, size: 20),
           ),
-        ),
-      ],
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: AppTextStyles.h4.copyWith(color: color)),
+                Text(subtitle,
+                    style: AppTextStyles.caption
+                        .copyWith(color: context.textMuted)),
+              ],
+            ),
+          ),
+          Icon(
+            enabled ? Icons.check_circle : Icons.arrow_forward_ios,
+            color: color, size: enabled ? 22 : 16,
+          ),
+        ]),
+      ),
     );
   }
 }
@@ -401,36 +767,24 @@ class _SwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subtitleColor =
-        Theme.of(context).colorScheme.onSurface.withOpacity(0.5);
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: subtitleColor),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(fontWeight: FontWeight.w500),
-              ),
-              Text(
-                subtitle,
-                style: TextStyle(color: subtitleColor, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-        Switch(
-          value: value,
-          onChanged: onChanged,
-          activeColor: const Color(0xFF3B82F6),
-        ),
-      ],
-    );
+    return Row(children: [
+      Icon(icon, size: 20, color: context.textMuted),
+      const SizedBox(width: AppSpacing.md),
+      Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label,
+              style: AppTextStyles.body.copyWith(
+                  color: context.textPrimary,
+                  fontWeight: FontWeight.w500)),
+          Text(subtitle,
+              style: AppTextStyles.caption.copyWith(color: context.textMuted)),
+        ]),
+      ),
+      Switch(
+        value: value,
+        onChanged: onChanged,
+        activeColor: context.primary,
+      ),
+    ]);
   }
 }

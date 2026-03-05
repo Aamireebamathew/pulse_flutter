@@ -21,14 +21,14 @@ class NavItem {
 }
 
 const navItems = [
-  NavItem(icon: Icons.dashboard_outlined,    label: 'Overview',            path: '/dashboard'),
-  NavItem(icon: Icons.inventory_2_outlined,  label: 'Registered Objects',  path: '/dashboard/objects'),
-  NavItem(icon: Icons.add_circle_outline,    label: 'Add Object',          path: '/dashboard/add-object'),
-  NavItem(icon: Icons.camera_alt_outlined,   label: 'Live Camera',         path: '/dashboard/camera'),
-  NavItem(icon: Icons.notifications_outlined,label: 'Alerts & History',    path: '/dashboard/alerts'),
-  NavItem(icon: Icons.smartphone_outlined,   label: 'Phone Recovery',      path: '/dashboard/phone-recovery'),
-  NavItem(icon: Icons.bluetooth_outlined,    label: 'Device Connections',  path: '/dashboard/bluetooth'),
-  NavItem(icon: Icons.settings_outlined,     label: 'Settings',            path: '/dashboard/settings'),
+  NavItem(icon: Icons.dashboard_outlined,     label: 'Overview',           path: '/dashboard'),
+  NavItem(icon: Icons.inventory_2_outlined,   label: 'Registered Objects', path: '/dashboard/objects'),
+  NavItem(icon: Icons.add_circle_outline,     label: 'Add Object',         path: '/dashboard/add-object'),
+  NavItem(icon: Icons.camera_alt_outlined,    label: 'Live Camera',        path: '/dashboard/camera'),
+  NavItem(icon: Icons.notifications_outlined, label: 'Alerts & History',   path: '/dashboard/alerts'),
+  NavItem(icon: Icons.smartphone_outlined,    label: 'Phone Recovery',     path: '/dashboard/phone-recovery'),
+  NavItem(icon: Icons.bluetooth_outlined,     label: 'Device Connections', path: '/dashboard/bluetooth'),
+  NavItem(icon: Icons.settings_outlined,      label: 'Settings',           path: '/dashboard/settings'),
 ];
 
 class MainDashboard extends StatefulWidget {
@@ -52,8 +52,8 @@ class _MainDashboardState extends State<MainDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    final isWide = MediaQuery.of(context).size.width >= 768;
-    final currentPath = _getCurrentPath(context);
+    final isWide       = MediaQuery.of(context).size.width >= 768;
+    final currentPath  = _getCurrentPath(context);
     final currentIndex = _getCurrentIndex(currentPath);
 
     return isWide
@@ -62,10 +62,11 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ── Wide (desktop/tablet) layout ───────────────────────────────────────────
-  Widget _buildWideLayout(BuildContext context, String currentPath, int currentIndex) {
+  Widget _buildWideLayout(
+      BuildContext context, String currentPath, int currentIndex) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: PulseBackground(
+      body: NearDearBackground(
         child: Row(
           children: [
             _buildSidebar(context, currentPath),
@@ -84,10 +85,11 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ── Narrow (mobile) layout ─────────────────────────────────────────────────
-  Widget _buildNarrowLayout(BuildContext context, String currentPath, int currentIndex) {
+  Widget _buildNarrowLayout(
+      BuildContext context, String currentPath, int currentIndex) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return PulseBackground(
+    return NearDearBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
         drawer: Drawer(
@@ -103,9 +105,8 @@ class _MainDashboardState extends State<MainDashboard> {
               onPressed: () => Scaffold.of(ctx).openDrawer(),
             ),
           ),
-          title: const PulseLogo(size: 32),
+          title: const NearDearLogo(size: 32),
           actions: [
-            // ── Notification bell ──
             _NotificationBellButton(),
             const SizedBox(width: 4),
             _ThemeToggleButton(),
@@ -120,7 +121,7 @@ class _MainDashboardState extends State<MainDashboard> {
   // ── Sidebar ────────────────────────────────────────────────────────────────
   Widget _buildSidebar(BuildContext context, String currentPath,
       {bool isDrawer = false}) {
-    final auth  = context.read<AuthProvider>();
+    final auth   = context.read<AuthProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final sidebarBg = isDark
@@ -143,28 +144,26 @@ class _MainDashboardState extends State<MainDashboard> {
       child: Column(
         children: [
           const SizedBox(height: 24),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: const PulseLogo(size: 36),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20),
+            child: NearDearLogo(size: 36),
           ),
           const SizedBox(height: 24),
 
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              children: [
-                ...navItems.map((item) {
-                  final isActive = currentPath == item.path;
-                  return _NavItemTile(
-                    item: item,
-                    isActive: isActive,
-                    onTap: () {
-                      if (isDrawer) Navigator.pop(context);
-                      context.go(item.path);
-                    },
-                  );
-                }),
-              ],
+              children: navItems.map<Widget>((item) {
+                final isActive = currentPath == item.path;
+                return _NavItemTile(
+                  item: item,
+                  isActive: isActive,
+                  onTap: () {
+                    if (isDrawer) Navigator.pop(context);
+                    context.go(item.path);
+                  },
+                );
+              }).toList(),
             ),
           ),
 
@@ -239,13 +238,13 @@ class _MainDashboardState extends State<MainDashboard> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          // ── Notification bell ──
           _NotificationBellButton(),
           const SizedBox(width: 8),
           _ThemeToggleButton(),
           const SizedBox(width: 12),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: isDark
                   ? Colors.white.withOpacity(0.06)
@@ -264,7 +263,75 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 }
 
-// ─── Notification bell with red badge ─────────────────────────────────────────
+// ─── NearDear Logo ────────────────────────────────────────────────────────────
+class NearDearLogo extends StatelessWidget {
+  final double size;
+  final bool showText;
+
+  const NearDearLogo({super.key, this.size = 36, this.showText = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: isDark
+                  ? [const Color(0xFF7C3AED), const Color(0xFF5B21B6)]
+                  : [const Color(0xFF3B82F6), const Color(0xFF2563EB)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(size * 0.28),
+            boxShadow: [
+              BoxShadow(
+                color: (isDark
+                        ? const Color(0xFF7C3AED)
+                        : const Color(0xFF3B82F6))
+                    .withOpacity(0.4),
+                blurRadius: 12,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: Icon(Icons.favorite_outline,
+              color: Colors.white, size: size * 0.52),
+        ),
+        if (showText) ...[
+          SizedBox(width: size * 0.28),
+          Text(
+            'NearDear',
+            style: TextStyle(
+              fontSize: size * 0.56,
+              fontWeight: FontWeight.bold,
+              letterSpacing: -0.5,
+              color: isDark ? Colors.white : const Color(0xFF1E293B),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ─── NearDear Background ──────────────────────────────────────────────────────
+class NearDearBackground extends StatelessWidget {
+  final Widget child;
+  const NearDearBackground({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return PulseBackground(child: child);
+  }
+}
+
+// ─── Notification bell ────────────────────────────────────────────────────────
 class _NotificationBellButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -286,8 +353,7 @@ class _NotificationBellButton extends StatelessWidget {
               const Icon(Icons.notifications_outlined, size: 26),
               if (count > 0)
                 Positioned(
-                  top: -5,
-                  right: -5,
+                  top: -5, right: -5,
                   child: Container(
                     padding: const EdgeInsets.all(3),
                     decoration: const BoxDecoration(

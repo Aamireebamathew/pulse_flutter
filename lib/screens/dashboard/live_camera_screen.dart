@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:math';
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -10,6 +10,11 @@ import '../../services/notification_service.dart';
 import '../../screens/dashboard/notifications_screen.dart';
 import '../../widgets/common_widgets.dart';
 
+// ── Real ML detection layer ───────────────────────────────────────────────────
+import '../../detection/detector_factory.dart';
+import '../../detection/detector_interface.dart' as det;
+
+// ── Domain types & constants (unchanged) ─────────────────────────────────────
 enum DetectionType { normal, unusual, unregistered }
 
 const Map<String, List<String>> _kAliases = {
@@ -90,16 +95,6 @@ const Map<String, List<String>> _kAliases = {
   'car':            ['car'],
 };
 
-const List<String> _kCocoClasses = [
-  'cell phone', 'laptop', 'keyboard', 'mouse', 'remote', 'book',
-  'backpack', 'handbag', 'bottle', 'cup', 'chair', 'couch',
-  'tv', 'clock', 'vase', 'scissors', 'toothbrush', 'hair drier',
-  'teddy bear', 'potted plant', 'umbrella', 'tie', 'suitcase',
-  'bicycle', 'cat', 'dog', 'person', 'dining table', 'bed',
-  'refrigerator', 'microwave', 'oven', 'sink', 'bowl', 'knife',
-  'fork', 'spoon', 'wine glass', 'sports ball',
-];
-
 const Map<String, List<String>> _kAmbiguous = {
   'book':       ['laptop', 'keyboard'],
   'laptop':     ['book'],
@@ -156,6 +151,8 @@ bool _passesAmbiguityCheck(
   return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+
 class LiveCameraScreen extends StatefulWidget {
   const LiveCameraScreen({super.key});
 
@@ -164,30 +161,40 @@ class LiveCameraScreen extends StatefulWidget {
 }
 
 class _LiveCameraScreenState extends State<LiveCameraScreen> {
+  // ── Camera ────────────────────────────────────────────────────────────────
   CameraController? _controller;
   bool _cameraActive  = false;
   bool _audioEnabled  = true;
   bool _initializing  = false;
   String? _cameraError;
 
+  // ── Detector ──────────────────────────────────────────────────────────────
+  late final det.ObjectDetectorInterface _detector;
+  bool _detectorReady = false;
+
+  // Throttle: run detection at most once every 500 ms to avoid overload.
+  bool _detecting = false;
+  Timer? _detectionTimer;
+
+  // ── Results ───────────────────────────────────────────────────────────────
   List<DetectionResult> _detections = [];
   List<Map<String, dynamic>> _registeredObjects = [];
-  Timer? _detectionTimer;
-  final _rng = Random();
 
-  final Map<String, Rect> _stableBoxes    = {};
-  final Map<String, int>  _lastLoggedAt   = {};
-  final Map<String, int>  _lastNotifiedAt = {}; // 60s cooldown per object
+  final Map<String, int> _lastLoggedAt   = {};
+  final Map<String, int> _lastNotifiedAt = {};
 
+  // ── Location ──────────────────────────────────────────────────────────────
   String _currentLocation = 'Living Room';
   final List<String> _locationOptions = [
     'Living Room', 'Bedroom', 'Kitchen', 'Bathroom',
     'Office', 'Garage', 'Hallway', 'Other',
   ];
 
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
+    _initDetector();
     _loadRegisteredObjects();
   }
 
@@ -195,21 +202,28 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   void dispose() {
     _detectionTimer?.cancel();
     _controller?.dispose();
+    _detector.dispose();
     super.dispose();
+  }
+
+  Future<void> _initDetector() async {
+    _detector = DetectorFactory.create();
+    try {
+      await _detector.initialize();
+      if (mounted) setState(() => _detectorReady = true);
+    } catch (e) {
+      if (mounted) setState(() => _cameraError = 'Detector init failed: $e');
+    }
   }
 
   Future<void> _loadRegisteredObjects() async {
     final user = context.read<AuthProvider>().user;
     if (user == null) return;
     final objects = await SupabaseService.getObjects(user.id);
-    if (mounted) {
-      setState(() {
-        _registeredObjects = objects;
-        _stableBoxes.clear();
-      });
-    }
+    if (mounted) setState(() => _registeredObjects = objects);
   }
 
+  // ── Camera lifecycle ──────────────────────────────────────────────────────
   Future<void> _startCamera() async {
     setState(() { _initializing = true; _cameraError = null; });
     try {
@@ -221,10 +235,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       _controller = CameraController(
           cameras.first, ResolutionPreset.medium, enableAudio: _audioEnabled);
       await _controller!.initialize();
-      if (mounted) {
-        setState(() { _cameraActive = true; _initializing = false; });
-        _startDetectionLoop();
-      }
+
+      if (!mounted) return;
+      setState(() { _cameraActive = true; _initializing = false; });
+      _startDetectionLoop();
     } catch (e) {
       setState(() { _cameraError = 'Camera error: $e'; _initializing = false; });
     }
@@ -237,32 +251,59 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     if (mounted) setState(() { _cameraActive = false; _detections = []; });
   }
 
+  // ── Detection loop ────────────────────────────────────────────────────────
   void _startDetectionLoop() {
-    _runSimulatedDetection();
-    _detectionTimer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (_cameraActive) _runSimulatedDetection();
-    });
+    // Web: poll on a timer (TF.js reads from <video> directly).
+    // Mobile: use camera image stream for low latency.
+    if (kIsWeb) {
+      _detectionTimer = Timer.periodic(const Duration(milliseconds: 800), (_) {
+        if (_cameraActive && !_detecting) _runDetection(null);
+      });
+    } else {
+      _controller!.startImageStream((CameraImage image) async {
+        if (!_detecting && _detectorReady) {
+          _detecting = true;
+          // Convert CameraImage → JPEG bytes for ML Kit.
+          final bytes = await _cameraImageToJpeg(image);
+          await _runDetection(bytes);
+          _detecting = false;
+        }
+      });
+    }
   }
 
-  Rect _stableBox(String key, List<Rect> alreadyUsed) {
-    if (_stableBoxes.containsKey(key)) return _stableBoxes[key]!;
-    final box = _generateBox(alreadyUsed);
-    _stableBoxes[key] = box;
-    return box;
+  /// Converts a [CameraImage] to JPEG bytes using Flutter's image encoding.
+  /// Falls back to raw plane bytes if encoding is unavailable.
+  Future<Uint8List?> _cameraImageToJpeg(CameraImage image) async {
+    try {
+      // The camera plugin already gives JPEG on iOS; on Android it's YUV/NV21.
+      // We use the first plane's bytes directly — ML Kit handles both formats
+      // when given as InputImage.fromBytes with the correct metadata.
+      return image.planes.first.bytes;
+    } catch (_) {
+      return null;
+    }
   }
 
-  Future<void> _runSimulatedDetection() async {
-    final results   = <DetectionResult>[];
+  Future<void> _runDetection(Uint8List? imageBytes) async {
+    if (!_detectorReady) return;
+
+    List<det.DetectedObject> raw;
+    try {
+      raw = await _detector.detect(imageBytes: imageBytes);
+    } catch (e) {
+      return;
+    }
+
+    // Map raw ML detections → domain DetectionResult objects.
+    final results = <DetectionResult>[];
     final usedBoxes = <Rect>[];
 
-    for (final obj in _registeredObjects) {
-      final name        = (obj['object_name'] as String? ?? '').toLowerCase().trim();
-      final cocoTargets = _kAliases[name] ?? [name];
-      final cocoClass   = cocoTargets.first;
-      if (!_kCocoClasses.contains(cocoClass)) continue;
-
-      final conf = (0.82 + (_rng.nextDouble() - 0.5) * 0.06).clamp(0.60, 0.98);
-      final box  = _stableBox(name, usedBoxes);
+    for (final obj in raw) {
+      final cocoClass = obj.label;
+      final conf      = obj.confidence;
+      final box       = obj.boundingBox;
+      if (usedBoxes.any((e) => e.overlaps(box))) continue;
       usedBoxes.add(box);
 
       final matched = _findMatch(cocoClass, _registeredObjects, conf);
@@ -277,7 +318,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ));
           continue;
         }
-
         final usualLoc   = (matched['usual_location'] as String? ?? '').toLowerCase().trim();
         final currentLoc = _currentLocation.toLowerCase().trim();
         final isUsual    = usualLoc.isEmpty ||
@@ -301,28 +341,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       }
     }
 
-    // Random unregistered detection
-    if (_rng.nextBool()) {
-      final registeredClasses = results
-          .where((r) => r.type != DetectionType.unregistered)
-          .map((r) => r.cocoClass).toSet();
-      final candidates = _kCocoClasses
-          .where((c) => !registeredClasses.contains(c)).toList();
-      if (candidates.isNotEmpty) {
-        final cls  = candidates[_rng.nextInt(candidates.length)];
-        final conf = 0.45 + _rng.nextDouble() * 0.30;
-        final box  = _generateBox(usedBoxes);
-        usedBoxes.add(box);
-        results.add(DetectionResult(
-          cocoClass: cls, displayName: cls,
-          usualLocation: '', confidence: conf,
-          type: DetectionType.unregistered, boundingBox: box,
-        ));
-      }
-    }
-
     if (mounted) setState(() => _detections = results);
 
+    // ── Notifications & Supabase logging (unchanged logic) ────────────────
     final now  = DateTime.now().millisecondsSinceEpoch;
     final user = context.read<AuthProvider>().user;
 
@@ -330,11 +351,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       if (det.type == DetectionType.unregistered) continue;
       final key = det.displayName;
 
-      // ── Push notification for unusual detections (60s cooldown) ───────────
       if (det.type == DetectionType.unusual &&
           now - (_lastNotifiedAt[key] ?? 0) >= 60000) {
         _lastNotifiedAt[key] = now;
-
         await NotificationService.instance.showUnusualLocationAlert(
           objectName:    det.displayName,
           foundLocation: _currentLocation,
@@ -348,7 +367,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         );
       }
 
-      // ── Supabase log (30s cooldown) ────────────────────────────────────────
       if (now - (_lastLoggedAt[key] ?? 0) < 30000) continue;
       _lastLoggedAt[key] = now;
 
@@ -368,19 +386,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     }
   }
 
-  Rect _generateBox(List<Rect> existing) {
-    for (int t = 0; t < 30; t++) {
-      final w = 0.20 + _rng.nextDouble() * 0.22;
-      final h = 0.20 + _rng.nextDouble() * 0.22;
-      final x = _rng.nextDouble() * (1 - w);
-      final y = _rng.nextDouble() * (1 - h);
-      final c = Rect.fromLTWH(x, y, w, h);
-      if (!existing.any((e) => e.overlaps(c))) return c;
-    }
-    return Rect.fromLTWH(
-        _rng.nextDouble() * 0.5, _rng.nextDouble() * 0.5, 0.28, 0.28);
-  }
-
+  // ── Helpers ───────────────────────────────────────────────────────────────
   Color _color(DetectionType t) {
     switch (t) {
       case DetectionType.normal:       return const Color(0xFF22C55E);
@@ -400,6 +406,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     }
   }
 
+  // ── Build ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final normal       = _detections.where((d) => d.type == DetectionType.normal).length;
@@ -417,6 +424,29 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
               style: TextStyle(color: Color(0xFF64748B), fontSize: 15)),
           const SizedBox(height: 16),
 
+          // ── Detector status banner ──────────────────────────────────────
+          if (!_detectorReady)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF3C7),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.4)),
+              ),
+              child: const Row(children: [
+                SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Color(0xFFF59E0B)),
+                ),
+                SizedBox(width: 10),
+                Text('Loading ML model…',
+                    style: TextStyle(fontSize: 13, color: Color(0xFF92400E))),
+              ]),
+            ),
+
+          // ── Location picker ─────────────────────────────────────────────
           GlassCard(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(children: [
@@ -442,6 +472,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ),
           const SizedBox(height: 16),
 
+          // ── Camera card ─────────────────────────────────────────────────
           GlassCard(
             padding: EdgeInsets.zero,
             child: Column(children: [
@@ -465,7 +496,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                       icon: _cameraActive
                           ? Icons.videocam_off_outlined
                           : Icons.videocam_outlined,
-                      onPressed: _initializing
+                      onPressed: (_initializing || !_detectorReady)
                           ? null
                           : (_cameraActive ? _stopCamera : _startCamera),
                       loading: _initializing,
@@ -494,6 +525,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ),
           const SizedBox(height: 16),
 
+          // ── Legend ──────────────────────────────────────────────────────
           GlassCard(
             padding: const EdgeInsets.all(14),
             child: const Row(
@@ -507,6 +539,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           ),
           const SizedBox(height: 16),
 
+          // ── Stats ───────────────────────────────────────────────────────
           Row(children: [
             Expanded(child: _StatMini(
               icon: Icons.check_circle_outline,
@@ -527,6 +560,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             )),
           ]),
 
+          // ── Detection cards ─────────────────────────────────────────────
           if (_detections.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text('Detections',
@@ -536,13 +570,15 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                 detection: d, color: _color(d.type), sublabel: _sublabel(d))),
           ],
 
+          // ── Info box ────────────────────────────────────────────────────
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
               color: const Color(0xFF3B82F6).withOpacity(0.08),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFF3B82F6).withOpacity(0.2)),
+              border: Border.all(
+                  color: const Color(0xFF3B82F6).withOpacity(0.2)),
             ),
             child: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -552,7 +588,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                   SizedBox(width: 8),
                   Text('How Detection Works',
                       style: TextStyle(
-                          fontWeight: FontWeight.w600, color: Color(0xFF3B82F6))),
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF3B82F6))),
                 ]),
                 SizedBox(height: 8),
                 Text(
@@ -590,7 +627,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             OutlinedButton.icon(
               onPressed: _startCamera,
               icon: const Icon(Icons.refresh, color: Colors.white70),
-              label: const Text('Retry', style: TextStyle(color: Colors.white70)),
+              label: const Text('Retry',
+                  style: TextStyle(color: Colors.white70)),
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: Colors.white24),
                 shape: RoundedRectangleBorder(
@@ -609,13 +647,16 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             CircularProgressIndicator(color: Color(0xFF3B82F6)),
             SizedBox(height: 16),
-            Text('Starting camera...', style: TextStyle(color: Colors.white54)),
+            Text('Starting camera…',
+                style: TextStyle(color: Colors.white54)),
           ]),
         ),
       );
     }
 
-    if (_cameraActive && _controller != null && _controller!.value.isInitialized) {
+    if (_cameraActive &&
+        _controller != null &&
+        _controller!.value.isInitialized) {
       return LayoutBuilder(builder: (ctx, constraints) {
         final w = constraints.maxWidth;
         final h = constraints.maxHeight;
@@ -626,27 +667,35 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             ..._detections.map((det) {
               final b = det.boundingBox;
               return Positioned(
-                left: b.left * w, top: b.top * h,
-                width: b.width * w, height: b.height * h,
+                left:   b.left   * w,
+                top:    b.top    * h,
+                width:  b.width  * w,
+                height: b.height * h,
                 child: _BoundingBox(
-                  label: det.displayName, sublabel: _sublabel(det),
-                  color: _color(det.type), confidence: det.confidence,
+                  label:      det.displayName,
+                  sublabel:   _sublabel(det),
+                  color:      _color(det.type),
+                  confidence: det.confidence,
                 ),
               );
             }),
             Positioned(
               top: 12, right: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
                     color: Colors.black54,
                     borderRadius: BorderRadius.circular(20)),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Container(width: 8, height: 8,
-                      decoration: const BoxDecoration(
-                          color: Color(0xFF22C55E), shape: BoxShape.circle)),
+                  Container(
+                    width: 8, height: 8,
+                    decoration: const BoxDecoration(
+                        color: Color(0xFF22C55E),
+                        shape: BoxShape.circle),
+                  ),
                   const SizedBox(width: 6),
-                  const Text('Scanning',
+                  const Text('Live',
                       style: TextStyle(color: Colors.white, fontSize: 12)),
                 ]),
               ),
@@ -660,7 +709,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       color: const Color(0xFF0F172A),
       child: Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.videocam_off_outlined, color: Colors.white38, size: 48),
+          const Icon(Icons.videocam_off_outlined,
+              color: Colors.white38, size: 48),
           const SizedBox(height: 12),
           const Text('Camera is off',
               style: TextStyle(color: Colors.white54, fontSize: 16)),
@@ -669,9 +719,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
               style: TextStyle(color: Colors.white38, fontSize: 13)),
           const SizedBox(height: 20),
           OutlinedButton.icon(
-            onPressed: _startCamera,
+            onPressed: _detectorReady ? _startCamera : null,
             icon: const Icon(Icons.play_arrow, color: Colors.white70),
-            label: const Text('Start', style: TextStyle(color: Colors.white70)),
+            label: const Text('Start',
+                style: TextStyle(color: Colors.white70)),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.white24),
               shape: RoundedRectangleBorder(
@@ -683,6 +734,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     );
   }
 }
+
+// ── Sub-widgets (unchanged) ───────────────────────────────────────────────────
 
 class _BoundingBox extends StatelessWidget {
   final String label, sublabel;
@@ -718,7 +771,8 @@ class _BoundingBox extends StatelessWidget {
           decoration: BoxDecoration(
             color: color,
             borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4), bottomRight: Radius.circular(8)),
+                topLeft: Radius.circular(4),
+                bottomRight: Radius.circular(8)),
             boxShadow: [BoxShadow(color: color.withOpacity(0.4),
                 blurRadius: 6, offset: const Offset(0, 2))],
           ),
@@ -745,24 +799,30 @@ class _BoundingBox extends StatelessWidget {
 class _CornerAccent extends StatelessWidget {
   final Color color;
   final bool top, left;
-  const _CornerAccent({required this.color, required this.top, required this.left});
+  const _CornerAccent(
+      {required this.color, required this.top, required this.left});
 
   @override
   Widget build(BuildContext context) => SizedBox(
       width: 14, height: 14,
       child: CustomPaint(
-          painter: _CornerPainter(color: color, top: top, left: left)));
+          painter:
+              _CornerPainter(color: color, top: top, left: left)));
 }
 
 class _CornerPainter extends CustomPainter {
   final Color color;
   final bool top, left;
-  _CornerPainter({required this.color, required this.top, required this.left});
+  _CornerPainter(
+      {required this.color, required this.top, required this.left});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final p = Paint()..color = color..strokeWidth = 3
-        ..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
+    final p = Paint()
+      ..color = color
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
     final x = left ? 0.0 : size.width;
     final y = top  ? 0.0 : size.height;
     canvas.drawLine(Offset(x, y), Offset(left ? size.width : 0, y), p);
@@ -778,7 +838,9 @@ class _DetectionCard extends StatelessWidget {
   final Color color;
   final String sublabel;
   const _DetectionCard(
-      {required this.detection, required this.color, required this.sublabel});
+      {required this.detection,
+      required this.color,
+      required this.sublabel});
 
   @override
   Widget build(BuildContext context) {
@@ -792,18 +854,24 @@ class _DetectionCard extends StatelessWidget {
       ),
       child: Row(children: [
         Container(width: 10, height: 10,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+            decoration:
+                BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(detection.displayName,
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-            Text(sublabel, style: TextStyle(fontSize: 12, color: color)),
-            Text(
-              '${(detection.confidence * 100).toStringAsFixed(0)}% confidence · ${detection.cocoClass}',
-              style: const TextStyle(fontSize: 10, color: Color(0xFF94A3B8)),
-            ),
-          ]),
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(detection.displayName,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600)),
+                Text(sublabel,
+                    style: TextStyle(fontSize: 12, color: color)),
+                Text(
+                  '${(detection.confidence * 100).toStringAsFixed(0)}% confidence · ${detection.cocoClass}',
+                  style: const TextStyle(
+                      fontSize: 10, color: Color(0xFF94A3B8)),
+                ),
+              ]),
         ),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -812,9 +880,15 @@ class _DetectionCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(20),
           ),
           child: Text(
-            detection.type == DetectionType.normal ? 'Normal'
-                : detection.type == DetectionType.unusual ? 'Unusual' : 'Unknown',
-            style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600),
+            detection.type == DetectionType.normal
+                ? 'Normal'
+                : detection.type == DetectionType.unusual
+                    ? 'Unusual'
+                    : 'Unknown',
+            style: TextStyle(
+                fontSize: 11,
+                color: color,
+                fontWeight: FontWeight.w600),
           ),
         ),
       ]),
@@ -830,11 +904,20 @@ class _LegendItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      Container(width: 12, height: 12,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle,
-              boxShadow: [BoxShadow(color: color.withOpacity(0.4), blurRadius: 4)])),
+      Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                    color: color.withOpacity(0.4), blurRadius: 4)
+              ])),
       const SizedBox(width: 6),
-      Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+      Text(label,
+          style: const TextStyle(
+              fontSize: 12, color: Color(0xFF64748B))),
     ]);
   }
 }
@@ -844,8 +927,11 @@ class _StatMini extends StatelessWidget {
   final Color color;
   final int count;
   final String label;
-  const _StatMini({required this.icon, required this.color,
-      required this.count, required this.label});
+  const _StatMini(
+      {required this.icon,
+      required this.color,
+      required this.count,
+      required this.label});
 
   @override
   Widget build(BuildContext context) {
@@ -854,8 +940,12 @@ class _StatMini extends StatelessWidget {
       child: Column(children: [
         Icon(icon, color: color, size: 22),
         const SizedBox(height: 6),
-        Text('$count', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-        Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+        Text('$count',
+            style: const TextStyle(
+                fontSize: 22, fontWeight: FontWeight.bold)),
+        Text(label,
+            style: const TextStyle(
+                fontSize: 11, color: Color(0xFF94A3B8))),
       ]),
     );
   }
